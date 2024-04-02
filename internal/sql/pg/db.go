@@ -268,6 +268,34 @@ func (db *DB) BeginReadTx(ctx context.Context) (sql.Tx, error) {
 	}, nil
 }
 
+// BeginSnapshotTx creates a read-only transaction with serializable isolation
+// level. This is used for taking a snapshot of the database.
+func (db *DB) BeginSnapshotTx(ctx context.Context) (sql.Tx, error) {
+	conn, err := db.pool.pgxp.Acquire(ctx) // ensure we have a connection
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		AccessMode: pgx.ReadOnly,
+		IsoLevel:   pgx.Serializable,
+	})
+	if err != nil {
+		conn.Release()
+		return nil, err
+	}
+
+	ntx := &nestedTx{
+		Tx:         tx,
+		accessMode: sql.ReadOnly,
+	}
+
+	return &readTx{
+		nestedTx: ntx,
+		release:  sync.OnceFunc(conn.Release),
+	}, nil
+}
+
 // beginWriterTx is the critical section of BeginTx.
 // It creates a new transaction on the write connection, and stores it in the
 // DB's tx field. It is not exported, and is only called from BeginTx.

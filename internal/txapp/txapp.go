@@ -28,7 +28,7 @@ import (
 
 // NewTxApp creates a new router.
 func NewTxApp(db DB, engine common.Engine, signer *auth.Ed25519Signer,
-	events Rebroadcaster, chainID string, GasEnabled bool, extensionConfigs map[string]map[string]string, log log.Logger) (*TxApp, error) {
+	events Rebroadcaster, snapshotter Snapshotter, chainID string, GasEnabled bool, extensionConfigs map[string]map[string]string, log log.Logger) (*TxApp, error) {
 	voteBodyTxSize, err := computeEmptyVoteBodyTxSize(chainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute empty vote body tx size: %w", err)
@@ -48,6 +48,7 @@ func NewTxApp(db DB, engine common.Engine, signer *auth.Ed25519Signer,
 			nodeAddr:   signer.Identity(),
 		},
 		signer:              signer,
+		snapshotter:         snapshotter,
 		chainID:             chainID,
 		GasEnabled:          GasEnabled,
 		extensionConfigs:    extensionConfigs,
@@ -104,6 +105,8 @@ type TxApp struct {
 
 	extensionConfigs map[string]map[string]string
 
+	snapshotter    Snapshotter
+	replayStatusFn ReplayStatusChecker
 	// precomputed variables
 	emptyVoteBodyTxSize int64
 	resTypes            []string
@@ -369,6 +372,14 @@ func (r *TxApp) Finalize(ctx context.Context, blockHeight int64) (appHash []byte
 	}()
 
 	r.log.Debug("Finalize(start)", log.Int("height", r.height), log.String("appHash", hex.EncodeToString(r.appHash)))
+
+	if r.height == 0 && r.appHash == nil {
+		// Replay using StateSync (GenesisInit is not called)
+		r.height, r.appHash, err = getChainState(ctx, r.currentTx)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
 	if blockHeight != r.height+1 {
 		return nil, nil, fmt.Errorf("Finalize was expecting height %d, got %d", r.height+1, blockHeight)
@@ -647,6 +658,47 @@ func (r *TxApp) Commit(ctx context.Context) error {
 	}
 
 	r.announceValidators()
+
+	// Take a snapshot of the database if node is not in the catchup mode and snapshots are enabled
+	if r.replayStatusFn != nil && !r.replayStatusFn() &&
+		r.snapshotter != nil && r.snapshotter.IsSnapshotDue(uint64(r.height)) {
+		err = r.snapshotDatabase(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *TxApp) snapshotDatabase(ctx context.Context) error {
+	snapTx, err := r.Database.BeginSnapshotTx(ctx)
+	if err != nil {
+		return err
+	}
+
+	// export snpashot id
+	res, err := snapTx.Execute(ctx, "SELECT pg_export_snapshot();")
+	if err != nil {
+		return err
+	}
+
+	// Expected to have 1 row and 1 column
+	if len(res.Columns) != 1 || len(res.Rows) != 1 {
+		return fmt.Errorf("unexpected result from pg_export_snapshot: %v", res)
+	}
+
+	snapshotID := res.Rows[0][0].(string)
+	r.log.Debug("Creating snapshot", zap.String("Snapshot ID", snapshotID), zap.Int64("height", r.height))
+
+	go func(ctx context.Context, snapshotID string, snapTx sql.Tx, height uint64) {
+		// snapTx will be closed once the snapshots are taken at the given snapshotID
+		defer snapTx.Rollback(ctx)
+
+		err := r.snapshotter.CreateSnapshot(ctx, height, snapshotID)
+		if err != nil {
+			r.log.Error("failed to dump logical snapshot", zap.Error(err))
+		}
+	}(ctx, snapshotID, snapTx, uint64(r.height))
 
 	return nil
 }
@@ -966,4 +1018,11 @@ func computeEmptyVoteBodyTxSize(chainID string) (int64, error) {
 		return 0, err
 	}
 	return int64(len(sz)), nil
+}
+
+type ReplayStatusChecker func() bool
+
+// SetreplayStatusChecker sets the function to check if the node is in replay mode
+func (r *TxApp) SetReplayStatusChecker(fn ReplayStatusChecker) {
+	r.replayStatusFn = fn
 }

@@ -27,8 +27,6 @@ import (
 )
 
 const (
-	DefaultSnapshotsDir = "snapshots"
-
 	DefaultTLSCertFile  = "rpc.cert"
 	defaultTLSKeyFile   = "rpc.key"
 	defaultAdminClients = "clients.pem"
@@ -82,7 +80,7 @@ type AppConfig struct {
 	ProfileFile        string                       `mapstructure:"profile_file"`
 	Extensions         map[string]map[string]string `mapstructure:"extensions"`
 
-	// SnapshotConfig     SnapshotConfig `mapstructure:"snapshots"`
+	Snapshots SnapshotConfig `mapstructure:"snapshots"`
 }
 
 type SnapshotConfig struct {
@@ -169,10 +167,14 @@ type ConsensusConfig struct {
 
 type StateSyncConfig struct {
 	Enable              bool     `mapstructure:"enable"`
-	TempDir             string   `mapstructure:"temp_dir"`
+	TempDir             string   `mapstructure:"temp_dir"` // Is this needed?
 	RPCServers          []string `mapstructure:"rpc_servers"`
 	DiscoveryTime       Duration `mapstructure:"discovery_time"`
 	ChunkRequestTimeout Duration `mapstructure:"chunk_request_timeout"`
+
+	TrustHeight uint64   `mapstructure:"trust_height"`
+	TrustHash   string   `mapstructure:"trust_hash"`
+	TrustPeriod Duration `mapstructure:"trust_period"`
 }
 
 type ChainConfig struct {
@@ -604,8 +606,14 @@ func (cfg *KwildConfig) sanitizeCfgPaths() {
 	} else {
 		cfg.AppCfg.PrivateKeyPath = filepath.Join(rootDir, PrivateKeyFileName)
 	}
-
 	fmt.Println("Private key path:", cfg.AppCfg.PrivateKeyPath)
+
+	if cfg.AppCfg.Snapshots.SnapshotDir != "" {
+		cfg.AppCfg.Snapshots.SnapshotDir = rootify(cfg.AppCfg.Snapshots.SnapshotDir, rootDir)
+	} else {
+		cfg.AppCfg.Snapshots.SnapshotDir = filepath.Join(rootDir, SnapshotDirName)
+	}
+	fmt.Println("Snapshot dir path:", cfg.AppCfg.Snapshots.SnapshotDir)
 }
 
 func (cfg *KwildConfig) InitPrivateKeyAndGenesis(autogen bool) (privateKey *crypto.Ed25519PrivateKey, genConfig *GenesisConfig, err error) {

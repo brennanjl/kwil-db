@@ -21,7 +21,6 @@ import (
 	"github.com/kwilteam/kwil-db/internal/abci"
 	"github.com/kwilteam/kwil-db/internal/abci/cometbft"
 	"github.com/kwilteam/kwil-db/internal/abci/meta"
-	"github.com/kwilteam/kwil-db/internal/abci/snapshots"
 	"github.com/kwilteam/kwil-db/internal/accounts"
 	"github.com/kwilteam/kwil-db/internal/engine/execution"
 	"github.com/kwilteam/kwil-db/internal/kv"
@@ -36,6 +35,7 @@ import (
 	kwilgrpc "github.com/kwilteam/kwil-db/internal/services/grpc_server"
 	healthcheck "github.com/kwilteam/kwil-db/internal/services/health"
 	simple_checker "github.com/kwilteam/kwil-db/internal/services/health/simple-checker"
+	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/sql/pg"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 	"github.com/kwilteam/kwil-db/internal/voting"
@@ -177,8 +177,8 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 	ev := buildEventStore(d, closers) // makes own DB connection
 
 	// these are dummies, but they might need init in the future.
-	snapshotModule := buildSnapshotter()
-	bootstrapperModule := buildBootstrapper()
+	snapshotter := buildSnapshotter(d)
+	// bootstrapperModule := buildBootstrapper()
 
 	// this is a hack
 	// we need the cometbft client to broadcast txs.
@@ -186,9 +186,9 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 	// to get the comet node, we need the abci app
 	// to get the abci app, we need the tx router
 	// but the tx router needs the cometbft client
-	txApp := buildTxApp(d, db, e, ev)
+	txApp := buildTxApp(d, db, e, ev, snapshotter)
 
-	abciApp := buildAbci(d, txApp, snapshotModule, bootstrapperModule)
+	abciApp := buildAbci(d, txApp, snapshotter)
 
 	// NOTE: buildCometNode immediately starts talking to the abciApp and
 	// replaying blocks (and using atomic db tx commits), i.e. calling
@@ -197,6 +197,7 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 
 	cometBftClient := buildCometBftClient(cometBftNode)
 	wrappedCmtClient := &wrappedCometBFTClient{cometBftClient}
+	txApp.SetReplayStatusChecker(cometBftNode.IsCatchup)
 
 	eventBroadcaster := buildEventBroadcaster(d, ev, wrappedCmtClient, txApp)
 	abciApp.SetEventBroadcaster(eventBroadcaster.RunBroadcast)
@@ -307,8 +308,8 @@ func (c *closeFuncs) closeAll() error {
 	return err
 }
 
-func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore) *txapp.TxApp {
-	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, d.genesisCfg.ChainID,
+func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *snapshots.SnapshotStore) *txapp.TxApp {
+	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, snapshotter, d.genesisCfg.ChainID,
 		!d.genesisCfg.ConsensusParams.WithoutGasCosts, d.cfg.AppCfg.Extensions, *d.log.Named("tx-router"))
 	if err != nil {
 		failBuild(err, "failed to build new TxApp")
@@ -316,8 +317,7 @@ func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext,
 	return txApp
 }
 
-func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.SnapshotStore,
-	bootstrapper *snapshots.Bootstrapper) *abci.AbciApp {
+func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.SnapshotStore) *abci.AbciApp {
 	var sh abci.SnapshotModule
 	if snapshotter != nil {
 		sh = snapshotter
@@ -330,7 +330,7 @@ func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.Sna
 		GenesisAllocs:      d.genesisCfg.Alloc,
 		GasEnabled:         !d.genesisCfg.ConsensusParams.WithoutGasCosts,
 	}
-	return abci.NewAbciApp(cfg, sh, bootstrapper, txApp,
+	return abci.NewAbciApp(cfg, sh, nil, txApp,
 		&txapp.ConsensusParams{
 			VotingPeriod:       d.genesisCfg.ConsensusParams.Votes.VoteExpiry,
 			JoinVoteExpiration: d.genesisCfg.ConsensusParams.Validator.JoinExpiry,
@@ -441,32 +441,34 @@ func initAccountRepository(d *coreDependencies, tx sql.Tx) {
 	}
 }
 
-func buildSnapshotter() *snapshots.SnapshotStore {
-	return nil
+func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 	// TODO: Uncomment when we have statesync ready
-	// cfg := d.cfg.AppCfg
-	// if !cfg.SnapshotConfig.Enabled {
-	// 	return nil
-	// }
+	cfg := d.cfg.AppCfg
+	if !cfg.Snapshots.Enabled {
+		return nil
+	}
 
-	// return snapshots.NewSnapshotStore(cfg.SqliteFilePath,
-	// 	cfg.SnapshotConfig.SnapshotDir,
-	// 	cfg.SnapshotConfig.RecurringHeight,
-	// 	cfg.SnapshotConfig.MaxSnapshots,
-	// 	snapshots.WithLogger(*d.log.Named("snapshotStore")),
-	// )
+	snapshotCfg := &snapshots.SnapshotConfig{
+		SnapshotDir:     cfg.Snapshots.SnapshotDir,
+		RecurringHeight: cfg.Snapshots.RecurringHeight,
+		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
+		DBUser:          cfg.DBUser,
+		DBHost:          cfg.DBHost,
+		DBPort:          cfg.DBPort,
+	}
+	return snapshots.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
 }
 
-func buildBootstrapper() *snapshots.Bootstrapper {
-	return nil
-	// TODO: Uncomment when we have statesync ready
-	// rcvdSnapsDir := filepath.Join(d.cfg.RootDir, rcvdSnapsDirName)
-	// bootstrapper, err := snapshots.NewBootstrapper(d.cfg.AppCfg.SqliteFilePath, rcvdSnapsDir)
-	// if err != nil {
-	// 	failBuild(err, "Bootstrap module initialization failure")
-	// }
-	// return bootstrapper
-}
+// func buildBootstrapper() *snapshots.Bootstrapper {
+// 	return nil
+// 	// TODO: Uncomment when we have statesync ready
+// 	// rcvdSnapsDir := filepath.Join(d.cfg.RootDir, rcvdSnapsDirName)
+// 	// bootstrapper, err := snapshots.NewBootstrapper(d.cfg.AppCfg.SqliteFilePath, rcvdSnapsDir)
+// 	// if err != nil {
+// 	// 	failBuild(err, "Bootstrap module initialization failure")
+// 	// }
+// 	// return bootstrapper
+// }
 
 func fileExists(name string) bool {
 	_, err := os.Stat(name)

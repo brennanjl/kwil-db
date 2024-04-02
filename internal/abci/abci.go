@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -379,16 +380,6 @@ func (a *AbciApp) Commit(ctx context.Context, _ *abciTypes.RequestCommit) (*abci
 		return nil, fmt.Errorf("failed to commit transaction app: %w", err)
 	}
 
-	// snapshotting
-	if a.snapshotter != nil && a.snapshotter.IsSnapshotDue(a.height) {
-		// TODO: Lock all DBs
-		err = a.snapshotter.CreateSnapshot(a.height)
-		if err != nil {
-			a.log.Error("snapshot creation failed", zap.Error(err))
-		}
-		// Unlock all the DBs
-	}
-
 	return &abciTypes.ResponseCommit{}, nil // RetainHeight stays 0 to not prune any blocks
 }
 
@@ -496,10 +487,15 @@ func (a *AbciApp) InitChain(ctx context.Context, req *abciTypes.RequestInitChain
 
 // ApplySnapshotChunk is on the state sync connection
 func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.RequestApplySnapshotChunk) (*abciTypes.ResponseApplySnapshotChunk, error) {
-	refetchChunks, status, err := a.bootstrapper.ApplySnapshotChunk(req.Chunk, req.Index)
-	if err != nil {
-		return &abciTypes.ResponseApplySnapshotChunk{Result: abciStatus(status), RefetchChunks: refetchChunks}, nil
+	if a.bootstrapper == nil {
+		return nil, errors.New("bootstrapper not set")
 	}
+
+	// _, _, err := a.bootstrapper.ApplySnapshotChunk(req.Chunk, req.Index)
+	// if err != nil {
+	// 	// return &abciTypes.ResponseApplySnapshotChunk{Result: abciStatus(status), RefetchChunks: refetchChunks}, nil
+	// 	return nil, err
+	// }
 
 	if a.bootstrapper.IsDBRestored() {
 		// NOTE: when snapshot is implemented, the bootstrapper should be able
@@ -522,11 +518,20 @@ func (a *AbciApp) ListSnapshots(ctx context.Context, req *abciTypes.RequestListS
 
 	var res []*abciTypes.Snapshot
 	for _, snapshot := range snapshots {
-		abciSnapshot, err := convertToABCISnapshot(&snapshot)
+		bts, err := json.Marshal(snapshot)
 		if err != nil {
-			return &abciTypes.ResponseListSnapshots{}, nil
+			return nil, err
 		}
-		res = append(res, abciSnapshot)
+
+		sp := &abciTypes.Snapshot{
+			Height:   snapshot.Height,
+			Format:   snapshot.Format,
+			Chunks:   snapshot.ChunkCount,
+			Hash:     snapshot.SnapshotHash,
+			Metadata: bts,
+		}
+
+		res = append(res, sp)
 	}
 	return &abciTypes.ResponseListSnapshots{Snapshots: res}, nil
 }
@@ -537,18 +542,21 @@ func (a *AbciApp) LoadSnapshotChunk(ctx context.Context, req *abciTypes.RequestL
 		return &abciTypes.ResponseLoadSnapshotChunk{}, nil
 	}
 
-	chunk := a.snapshotter.LoadSnapshotChunk(req.Height, req.Format, req.Chunk)
+	chunk, err := a.snapshotter.LoadSnapshotChunk(req.Height, req.Format, req.Chunk)
+	if err != nil {
+		return nil, err
+	}
 	return &abciTypes.ResponseLoadSnapshotChunk{Chunk: chunk}, nil
 }
 
 // OfferSnapshot is on the state sync connection
 func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOfferSnapshot) (*abciTypes.ResponseOfferSnapshot, error) {
-	snapshot := convertABCISnapshots(req.Snapshot)
-	if a.bootstrapper.OfferSnapshot(snapshot) != nil {
-		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
-	}
-	a.bootupState.appHash = req.Snapshot.Hash
-	a.bootupState.height = int64(snapshot.Height)
+	// snapshot := convertABCISnapshots(req.Snapshot)
+	// if a.bootstrapper.OfferSnapshot(snapshot) != nil {
+	// 	return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
+	// }
+	// a.bootupState.appHash = req.Snapshot.Hash
+	// a.bootupState.height = int64(snapshot.Height)
 	return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_ACCEPT}, nil
 }
 
