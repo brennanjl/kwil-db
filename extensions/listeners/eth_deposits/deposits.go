@@ -71,6 +71,7 @@ func Start(ctx context.Context, service *common.Service, eventstore listeners.Ev
 	if err != nil {
 		return fmt.Errorf("failed to get current block height: %w", err)
 	}
+	service.Logger.S.Infof("ETH best block: %v", currentHeight)
 
 	if lastHeight > currentHeight-config.RequiredConfirmations {
 		return fmt.Errorf("starting height is greater than the last confirmed eth block height")
