@@ -35,8 +35,8 @@ import (
 	kwilgrpc "github.com/kwilteam/kwil-db/internal/services/grpc_server"
 	healthcheck "github.com/kwilteam/kwil-db/internal/services/health"
 	simple_checker "github.com/kwilteam/kwil-db/internal/services/health/simple-checker"
-	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/sql/pg"
+	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 	"github.com/kwilteam/kwil-db/internal/voting"
 	"github.com/kwilteam/kwil-db/internal/voting/broadcast"
@@ -178,7 +178,7 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 
 	// these are dummies, but they might need init in the future.
 	snapshotter := buildSnapshotter(d)
-	// bootstrapperModule := buildBootstrapper()
+	statesyncer := buildStatesyncer(d)
 
 	// this is a hack
 	// we need the cometbft client to broadcast txs.
@@ -188,7 +188,7 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 	// but the tx router needs the cometbft client
 	txApp := buildTxApp(d, db, e, ev, snapshotter)
 
-	abciApp := buildAbci(d, txApp, snapshotter)
+	abciApp := buildAbci(d, txApp, snapshotter, statesyncer)
 
 	// NOTE: buildCometNode immediately starts talking to the abciApp and
 	// replaying blocks (and using atomic db tx commits), i.e. calling
@@ -308,7 +308,7 @@ func (c *closeFuncs) closeAll() error {
 	return err
 }
 
-func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *snapshots.SnapshotStore) *txapp.TxApp {
+func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *statesync.SnapshotStore) *txapp.TxApp {
 	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, snapshotter, d.genesisCfg.ChainID,
 		!d.genesisCfg.ConsensusParams.WithoutGasCosts, d.cfg.AppCfg.Extensions, *d.log.Named("tx-router"))
 	if err != nil {
@@ -317,10 +317,15 @@ func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext,
 	return txApp
 }
 
-func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.SnapshotStore) *abci.AbciApp {
+func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *statesync.SnapshotStore, statesyncer *statesync.StateSyncer) *abci.AbciApp {
 	var sh abci.SnapshotModule
 	if snapshotter != nil {
 		sh = snapshotter
+	}
+
+	var ss abci.StateSyncModule
+	if statesyncer != nil {
+		ss = statesyncer
 	}
 
 	cfg := &abci.AbciConfig{
@@ -330,7 +335,7 @@ func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.Sna
 		GenesisAllocs:      d.genesisCfg.Alloc,
 		GasEnabled:         !d.genesisCfg.ConsensusParams.WithoutGasCosts,
 	}
-	return abci.NewAbciApp(cfg, sh, nil, txApp,
+	return abci.NewAbciApp(cfg, sh, ss, txApp,
 		&txapp.ConsensusParams{
 			VotingPeriod:       d.genesisCfg.ConsensusParams.Votes.VoteExpiry,
 			JoinVoteExpiration: d.genesisCfg.ConsensusParams.Validator.JoinExpiry,
@@ -441,34 +446,39 @@ func initAccountRepository(d *coreDependencies, tx sql.Tx) {
 	}
 }
 
-func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
-	// TODO: Uncomment when we have statesync ready
+func buildSnapshotter(d *coreDependencies) *statesync.SnapshotStore {
 	cfg := d.cfg.AppCfg
 	if !cfg.Snapshots.Enabled {
 		return nil
 	}
 
-	snapshotCfg := &snapshots.SnapshotConfig{
+	dbCfg := statesync.DBConfig{
+		DBUser: cfg.DBUser,
+		DBPass: cfg.DBPass,
+		DBHost: cfg.DBHost,
+		DBPort: cfg.DBPort,
+	}
+	snapshotCfg := &statesync.SnapshotConfig{
 		SnapshotDir:     cfg.Snapshots.SnapshotDir,
 		RecurringHeight: cfg.Snapshots.RecurringHeight,
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
-		DBUser:          cfg.DBUser,
-		DBHost:          cfg.DBHost,
-		DBPort:          cfg.DBPort,
+		DbConfig:        dbCfg,
 	}
-	return snapshots.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
+	return statesync.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
 }
 
-// func buildBootstrapper() *snapshots.Bootstrapper {
-// 	return nil
-// 	// TODO: Uncomment when we have statesync ready
-// 	// rcvdSnapsDir := filepath.Join(d.cfg.RootDir, rcvdSnapsDirName)
-// 	// bootstrapper, err := snapshots.NewBootstrapper(d.cfg.AppCfg.SqliteFilePath, rcvdSnapsDir)
-// 	// if err != nil {
-// 	// 	failBuild(err, "Bootstrap module initialization failure")
-// 	// }
-// 	// return bootstrapper
-// }
+func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
+	cfg := d.cfg.AppCfg
+	dbCfg := statesync.DBConfig{
+		DBUser: cfg.DBUser,
+		DBPass: cfg.DBPass,
+		DBHost: cfg.DBHost,
+		DBPort: cfg.DBPort,
+	}
+
+	// create state syncer
+	return statesync.NewStateSyncer(dbCfg, cfg.Snapshots.SnapshotDir, *d.log.Named("stateSyncer"))
+}
 
 func fileExists(name string) bool {
 	_, err := os.Stat(name)

@@ -97,12 +97,16 @@ func newCometConfig(cfg *config.KwildConfig) *cmtCfg.Config {
 	nodeCfg.Consensus.TimeoutPrecommit = time.Duration(userChainCfg.Consensus.TimeoutPrecommit)
 	nodeCfg.Consensus.TimeoutCommit = time.Duration(userChainCfg.Consensus.TimeoutCommit)
 
-	nodeCfg.StateSync.Enable = false
-	// nodeCfg.StateSync.Enable = userChainCfg.StateSync.Enable
-	// nodeCfg.StateSync.TempDir = userChainCfg.StateSync.TempDir
-	// nodeCfg.StateSync.RPCServers = userChainCfg.StateSync.RPCServers
-	// nodeCfg.StateSync.DiscoveryTime = userChainCfg.StateSync.DiscoveryTime
-	// nodeCfg.StateSync.ChunkRequestTimeout = userChainCfg.StateSync.ChunkRequestTimeout
+	nodeCfg.StateSync.Enable = userChainCfg.StateSync.Enable
+	// nodeCfg.StateSync.TempDir = userChainCfg.StateSync.ReceivedSnapshotsDir
+	nodeCfg.StateSync.RPCServers = userChainCfg.StateSync.RPCServers
+	nodeCfg.StateSync.DiscoveryTime = time.Duration(userChainCfg.StateSync.DiscoveryTime)
+	nodeCfg.StateSync.ChunkRequestTimeout = time.Duration(userChainCfg.StateSync.ChunkRequestTimeout)
+
+	// Light client verficiation
+	nodeCfg.StateSync.TrustHash = userChainCfg.StateSync.TrustHash
+	nodeCfg.StateSync.TrustHeight = userChainCfg.StateSync.TrustHeight
+	nodeCfg.StateSync.TrustPeriod = time.Duration(userChainCfg.StateSync.TrustPeriod)
 
 	// Standardize the paths.
 	nodeCfg.DBPath = cometbft.DataDir // i.e. "data", we do not allow users to change

@@ -41,11 +41,11 @@ type AbciConfig struct {
 	GasEnabled         bool
 }
 
-func NewAbciApp(cfg *AbciConfig, snapshotter SnapshotModule, bootstrapper DBBootstrapModule,
+func NewAbciApp(cfg *AbciConfig, snapshotter SnapshotModule, statesyncer StateSyncModule,
 	txRouter TxApp, consensusParams *txapp.ConsensusParams, log log.Logger) *AbciApp {
 	app := &AbciApp{
 		cfg:             *cfg,
-		bootstrapper:    bootstrapper,
+		statesyncer:     statesyncer,
 		snapshotter:     snapshotter,
 		txApp:           txRouter,
 		consensusParams: consensusParams,
@@ -85,7 +85,7 @@ type AbciApp struct {
 	snapshotter SnapshotModule
 
 	// bootstrapper is the bootstrapper module that handles bootstrapping the database
-	bootstrapper DBBootstrapModule
+	statesyncer StateSyncModule
 
 	log log.Logger
 
@@ -487,7 +487,7 @@ func (a *AbciApp) InitChain(ctx context.Context, req *abciTypes.RequestInitChain
 
 // ApplySnapshotChunk is on the state sync connection
 func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.RequestApplySnapshotChunk) (*abciTypes.ResponseApplySnapshotChunk, error) {
-	if a.bootstrapper == nil {
+	if a.statesyncer == nil {
 		return nil, errors.New("bootstrapper not set")
 	}
 
@@ -497,7 +497,7 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 	// 	return nil, err
 	// }
 
-	if a.bootstrapper.IsDBRestored() {
+	if a.statesyncer.IsDBRestored() {
 		// NOTE: when snapshot is implemented, the bootstrapper should be able
 		// to meta.SetChainState.
 		a.log.Info("Bootstrapped database successfully")

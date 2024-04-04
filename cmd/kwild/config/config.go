@@ -166,13 +166,14 @@ type ConsensusConfig struct {
 }
 
 type StateSyncConfig struct {
-	Enable              bool     `mapstructure:"enable"`
-	TempDir             string   `mapstructure:"temp_dir"` // Is this needed?
-	RPCServers          []string `mapstructure:"rpc_servers"`
-	DiscoveryTime       Duration `mapstructure:"discovery_time"`
-	ChunkRequestTimeout Duration `mapstructure:"chunk_request_timeout"`
+	Enable               bool     `mapstructure:"enable"`
+	ReceivedSnapshotsDir string   `mapstructure:"temp_dir"`
+	RPCServers           []string `mapstructure:"rpc_servers"`
+	DiscoveryTime        Duration `mapstructure:"discovery_time"`
+	ChunkRequestTimeout  Duration `mapstructure:"chunk_request_timeout"`
 
-	TrustHeight uint64   `mapstructure:"trust_height"`
+	// Light client verification options
+	TrustHeight int64    `mapstructure:"trust_height"`
 	TrustHash   string   `mapstructure:"trust_hash"`
 	TrustPeriod Duration `mapstructure:"trust_period"`
 }
