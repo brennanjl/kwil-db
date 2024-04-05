@@ -51,6 +51,7 @@ Trust related:
 */
 type StateSyncer struct {
 	dbConfig DBConfig
+	// TODO: Statesync should reference snapshotter, so that it can register the snapshot with which it bootstrapped.
 
 	inProgress   bool
 	snapshotsDir string
@@ -140,6 +141,7 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index]) {
 		ss.log.Error("Invalid chunk hash", zap.Uint32("index", index), zap.String("Chunk Hash", fmt.Sprintf("%x", chunkHash)), zap.String("Expected Hash", fmt.Sprintf("%x", ss.snapshot.ChunkHashes[index])))
 		return fmt.Errorf("invalid chunk hash")
+		// TODO: delete the chunks stored on disk
 	}
 
 	// store the chunk on disk
@@ -199,7 +201,7 @@ func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	defer gzipReader.Close()
 
 	cmd := exec.CommandContext(ctx, "psql", "-U", "kwild", "-h", "localhost", "-p", "5435", "-d", "kwild")
-	cmd.Stdin = gzipReader
+	cmd.Stdin = streamer
 
 	if err := cmd.Start(); err != nil {
 		return err

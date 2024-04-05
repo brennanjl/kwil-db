@@ -1,6 +1,8 @@
 package statesync
 
 import (
+	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -50,7 +52,7 @@ import (
 
 const (
 	// chunkSize = 16 * 1024 * 1024 // 16MB
-	chunkSize = 5 * 1024 // 10KB
+	chunkSize int64 = 5 * 1024 // 10KB
 )
 
 type DBConfig struct {
@@ -183,6 +185,7 @@ func (s *SnapshotStore) CreateSnapshot(ctx context.Context, height uint64, snaps
 }
 
 func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotID string) error {
+	// Flow: pg_dump | sed | gzip > chunk files of 16MB
 	pgDumpCmd := exec.CommandContext(ctx,
 		"pg_dump",
 		// File format options
@@ -224,10 +227,6 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 	if err != nil {
 		return fmt.Errorf("failed to create stdout pipe from sed command: %w", err)
 	}
-	sedStderrPipe, err := sedCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe from sed command: %w", err)
-	}
 
 	// Start the sed command first
 	if err := sedCmd.Start(); err != nil {
@@ -247,12 +246,8 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 		writer.Close()
 	}()
 
-	// Check for errors from sed (optional)
-	if err, _ := io.ReadAll(sedStderrPipe); err != nil {
-		fmt.Printf("Error from sed command: %s\n", err)
-	}
-
-	chunks := 1
+	var chunkErr error
+	chunkIdx := 0
 	var fileSz uint64
 	var hashes [][]byte
 	hasher := sha256.New()
@@ -266,43 +261,111 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
 		return fmt.Errorf("failed to create snapshot directory %s at height %d: %w", chunkDir, height, err)
 	}
+	outputFile := snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunkIdx))
+	chunkFile, err := os.Create(outputFile)
+	if err != nil {
+		deleteSnapshotDir(snapshotHeightDir)
+		return fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
+	}
+
+	chunkReader := bufio.NewReader(sedStdoutPipe)
+	gzipWriter := gzip.NewWriter(chunkFile)
+
+	var curChunkSize int64
 
 	// split the output into chunks of 16MB (Max chunks allowed by CometBFT)
 	// https://docs.cometbft.com/v0.38/spec/p2p/legacy-docs/messages/state-sync#chunkresponse
-	var chunkErr error
+
 	for {
-		outputFile := snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunks-1))
-		chunkFile, err := os.Create(outputFile)
-		if err != nil {
-			chunkErr = fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
-			break
-		}
-
-		// copy 16MB of data from the stdout pipe to the chunk file
-		// copyN copies chunks of 32KB from the stdout pipe to the chunk file until EOF or 16MB is reached
-		n, err := io.CopyN(chunkFile, sedStdoutPipe, chunkSize)
-		if err != nil && err != io.EOF {
-			chunkErr = fmt.Errorf("failed to copy chunk %d at height %d: %w", chunks, height, err)
-			break
-		}
+		buf := make([]byte, 4096)
+		n, err := chunkReader.Read(buf)
 		fileSz += uint64(n)
-		hash, err := utils.HashFile(outputFile)
-		if err != nil {
-			return fmt.Errorf("failed to hash chunk %d at height %d: %w", chunks, height, err)
-		}
-		hashes = append(hashes, hash)
-		hasher.Write(hash)
+		if n > 0 {
+			// Write upto 16MB - curChunkSize to the chunk file
+			if curChunkSize+int64(n) > chunkSize {
+				// Write only upto 16MB - curChunkSize
+				_, err := gzipWriter.Write(buf[:chunkSize-curChunkSize])
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
 
-		if n < chunkSize {
-			// Last chunk
-			break
+				err = gzipWriter.Close()
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to close gzip writer for chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
+				err = chunkFile.Close()
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to close chunk file %s at height %d: %w", outputFile, height, err)
+					break
+				}
+				hash, err := utils.HashFile(outputFile)
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to hash chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
+				hashes = append(hashes, hash)
+				hasher.Write(hash)
+
+				chunkIdx++
+				outputFile = snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunkIdx))
+				chunkFile, err = os.Create(outputFile)
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
+					break
+				}
+				gzipWriter = gzip.NewWriter(chunkFile)
+
+				// Write the remaining bytes to the new chunk file
+				_, err = gzipWriter.Write(buf[chunkSize-curChunkSize : n])
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
+				curChunkSize = int64(n) - (chunkSize - curChunkSize)
+			} else {
+				_, err := gzipWriter.Write(buf[:n])
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
+				curChunkSize += int64(n)
+			}
 		}
-		chunks++
+		if err != nil {
+			if err == io.EOF {
+				// Last chunk
+				hash, err := utils.HashFile(outputFile)
+				if err != nil {
+					chunkErr = fmt.Errorf("failed to hash chunk %d at height %d: %w", chunkIdx, height, err)
+					break
+				}
+				hashes = append(hashes, hash)
+				hasher.Write(hash)
+				break
+			} else {
+				chunkErr = fmt.Errorf("failed to read chunk %d at height %d: %w", chunkIdx, height, err)
+				break
+			}
+		}
 	}
 
 	if chunkErr != nil {
 		deleteSnapshotDir(snapshotHeightDir)
 		return chunkErr
+	}
+
+	err = gzipWriter.Close()
+	if err != nil {
+		deleteSnapshotDir(snapshotHeightDir)
+		return fmt.Errorf("failed to close gzip writer for chunk %d at height %d: %w", chunkIdx, height, err)
+	}
+
+	err = chunkFile.Close()
+	if err != nil {
+		deleteSnapshotDir(snapshotHeightDir)
+		return fmt.Errorf("failed to close chunk file %s at height %d: %w", outputFile, height, err)
 	}
 
 	if err := sedCmd.Wait(); err != nil {
@@ -315,7 +378,7 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 	header := &SnapshotHeader{
 		Height:       height,
 		Format:       0, // Standard gzip compressed plain SQL dump
-		ChunkCount:   uint32(chunks),
+		ChunkCount:   uint32(chunkIdx + 1),
 		ChunkHashes:  hashes,
 		SnapshotHash: hasher.Sum(nil), // Calculate hash of the snapshot
 		SnapshotSize: fileSz,          // Calculate size of the snapshot
