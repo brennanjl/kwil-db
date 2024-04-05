@@ -464,7 +464,11 @@ func buildSnapshotter(d *coreDependencies) *statesync.SnapshotStore {
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
 		DbConfig:        dbCfg,
 	}
-	return statesync.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
+	ss, err := statesync.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
+	if err != nil {
+		failBuild(err, "failed to build snapshot store")
+	}
+	return ss
 }
 
 func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {

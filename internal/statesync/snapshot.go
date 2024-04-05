@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/kwilteam/kwil-db/core/log"
@@ -71,9 +73,9 @@ type SnapshotConfig struct {
 type SnapshotStore struct {
 	cfg *SnapshotConfig
 	// Snapshot store state
-	snapshots       map[uint64]SnapshotHeader // Map of snapshot height to snapshot header
-	snapshotHeights []uint64                  // List of snapshot heights
-	snapshotsMtx    sync.RWMutex              // Protects access to snapshots and snapshotHeights
+	snapshots       map[uint64]*SnapshotHeader // Map of snapshot height to snapshot header
+	snapshotHeights []uint64                   // List of snapshot heights
+	snapshotsMtx    sync.RWMutex               // Protects access to snapshots and snapshotHeights
 
 	log log.Logger
 }
@@ -87,7 +89,6 @@ type SnapshotHeader struct {
 	ChunkCount   uint32   `json:"chunk_count"`
 	SnapshotHash []byte   `json:"hash"`
 	SnapshotSize uint64   `json:"size"`
-	SnapshotDir  string   `json:"snapshot_dir"`
 }
 
 func (s *SnapshotHeader) SaveAs(file string) error {
@@ -110,13 +111,49 @@ func LoadSnapshotHeader(file string) (*SnapshotHeader, error) {
 	return &header, nil
 }
 
-func NewSnapshotStore(cfg *SnapshotConfig, logger log.Logger) *SnapshotStore {
-	return &SnapshotStore{
+func NewSnapshotStore(cfg *SnapshotConfig, logger log.Logger) (*SnapshotStore, error) {
+	ss := &SnapshotStore{
 		cfg:             cfg,
-		snapshots:       make(map[uint64]SnapshotHeader),
+		snapshots:       make(map[uint64]*SnapshotHeader),
 		snapshotHeights: make([]uint64, 0),
 		log:             logger,
 	}
+
+	// List number of snapshots in the snapshot directory
+	files, err := os.ReadDir(cfg.SnapshotDir)
+	if err != nil {
+		return ss, nil
+	}
+
+	for _, file := range files {
+		if !file.IsDir() {
+			continue
+		}
+		fileName := file.Name() // format: block-<height>
+		names := strings.Split(fileName, "-")
+		if len(names) != 2 {
+			logger.Error("Invalid snapshot directory", zap.String("dir", cfg.SnapshotDir))
+			return nil, fmt.Errorf("invalid snapshot directory: %s", cfg.SnapshotDir)
+		}
+		height := names[1]
+		heightInt, err := strconv.ParseUint(height, 10, 64)
+		if err != nil {
+			logger.Error("Failed to parse snapshot directory", zap.String("dir", cfg.SnapshotDir), zap.Error(err))
+			return nil, fmt.Errorf("failed to parse snapshot directory: %w", err)
+		}
+		ss.snapshotHeights = append(ss.snapshotHeights, heightInt)
+
+		// Load snapshot header
+		headerFile := SnapshotHeaderFile(cfg.SnapshotDir, heightInt, 0)
+		header, err := LoadSnapshotHeader(headerFile)
+		if err != nil {
+			logger.Error("Failed to load snapshot header", zap.String("file", headerFile), zap.Error(err))
+			return nil, fmt.Errorf("failed to load snapshot header: %w", err)
+		}
+		ss.snapshots[heightInt] = header
+	}
+
+	return ss, nil
 }
 
 // IsSnapshotDue checks if a snapshot is due at the given height.
@@ -136,7 +173,7 @@ func (s *SnapshotStore) CreateSnapshot(ctx context.Context, height uint64, snaps
 	}
 
 	// Check if the number of snapshots exceeds the maximum number of snapshots
-	if len(s.snapshotHeights) > s.cfg.MaxSnapshots {
+	for len(s.snapshotHeights) > s.cfg.MaxSnapshots {
 		if err := s.deleteOldestSnapshot(); err != nil {
 			return fmt.Errorf("failed to delete oldest snapshot: %w", err)
 		}
@@ -151,7 +188,6 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 		// File format options
 		"--dbname", "kwild",
 		"--format", "plain",
-		// "--compress", "gzip:9",
 		// List of schemas to include in the dump
 		"--schema", "kwild_accts",
 		"--schema", "kwild_voting",
@@ -223,9 +259,9 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 
 	// Default format 0 is gzip compressed plain SQL dump
 	// Dir name
-	snapshotHeightDir := filepath.Join(s.cfg.SnapshotDir, fmt.Sprintf("block-%d", height))
-	snapshotDir := filepath.Join(snapshotHeightDir, fmt.Sprintf("format-%d", 0))
-	chunkDir := filepath.Join(snapshotDir, "chunks")
+	snapshotHeightDir := snapshotHeightDir(s.cfg.SnapshotDir, height)
+	snapshotDir := snapshotFormatDir(s.cfg.SnapshotDir, height, 0)
+	chunkDir := snapshotChunkDir(s.cfg.SnapshotDir, height, 0)
 
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
 		return fmt.Errorf("failed to create snapshot directory %s at height %d: %w", chunkDir, height, err)
@@ -235,7 +271,7 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 	// https://docs.cometbft.com/v0.38/spec/p2p/legacy-docs/messages/state-sync#chunkresponse
 	var chunkErr error
 	for {
-		outputFile := filepath.Join(chunkDir, fmt.Sprintf("chunk-%d", chunks-1))
+		outputFile := snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunks-1))
 		chunkFile, err := os.Create(outputFile)
 		if err != nil {
 			chunkErr = fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
@@ -275,6 +311,7 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 	}
 
 	// Create the snapshot header file
+
 	header := &SnapshotHeader{
 		Height:       height,
 		Format:       0, // Standard gzip compressed plain SQL dump
@@ -282,7 +319,6 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 		ChunkHashes:  hashes,
 		SnapshotHash: hasher.Sum(nil), // Calculate hash of the snapshot
 		SnapshotSize: fileSz,          // Calculate size of the snapshot
-		SnapshotDir:  snapshotDir,
 	}
 	if err := header.SaveAs(filepath.Join(snapshotDir, "header.json")); err != nil {
 		deleteSnapshotDir(snapshotHeightDir)
@@ -291,7 +327,7 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotI
 
 	// Add the snapshot to the list of snapshots
 	s.snapshotsMtx.Lock()
-	s.snapshots[height] = *header
+	s.snapshots[height] = header
 	s.snapshotHeights = append(s.snapshotHeights, height)
 	s.snapshotsMtx.Unlock()
 
@@ -316,28 +352,35 @@ func (s *SnapshotStore) deleteOldestSnapshot() error {
 		return nil
 	}
 
+	// Delete the oldest snapshot
+	snapshot := s.snapshots[s.snapshotHeights[0]]
+	heightDir := snapshotHeightDir(s.cfg.SnapshotDir, snapshot.Height)
+	if err := deleteSnapshotDir(heightDir); err != nil {
+		return fmt.Errorf("failed to delete snapshot directory %s: %w", heightDir, err)
+	}
+
 	delete(s.snapshots, s.snapshotHeights[0])
 	s.snapshotHeights = s.snapshotHeights[1:]
 	return nil
 }
 
 // List snapshots should return the metadata corresponding to all the existing snapshots.
-func (s *SnapshotStore) ListSnapshots() ([]SnapshotHeader, error) {
+func (s *SnapshotStore) ListSnapshots() ([]*SnapshotHeader, error) {
 	// Make copy of snapshots
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()
 
-	snaps := make([]SnapshotHeader, len(s.snapshots))
-	for i, snap := range s.snapshots {
+	snaps := make([]*SnapshotHeader, len(s.snapshots))
+	counter := 0
+	for _, snap := range s.snapshots {
 		// Deep copy the snapshot header
-		header := SnapshotHeader{
+		header := &SnapshotHeader{
 			Height:       snap.Height,
 			Format:       snap.Format,
 			ChunkCount:   snap.ChunkCount,
 			ChunkHashes:  make([][]byte, len(snap.ChunkHashes)),
 			SnapshotHash: make([]byte, len(snap.SnapshotHash)),
 			SnapshotSize: snap.SnapshotSize,
-			SnapshotDir:  snap.SnapshotDir,
 		}
 
 		for j, hash := range snap.ChunkHashes {
@@ -345,7 +388,8 @@ func (s *SnapshotStore) ListSnapshots() ([]SnapshotHeader, error) {
 			copy(header.ChunkHashes[j], hash)
 		}
 		copy(header.SnapshotHash, snap.SnapshotHash)
-		snaps[i] = header
+		snaps[counter] = header
+		counter++
 	}
 
 	return snaps, nil
@@ -369,7 +413,7 @@ func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunk ui
 		return nil, fmt.Errorf("chunk %d does not exist in snapshot at height %d", chunk, height)
 	}
 
-	chunkFile := filepath.Join(header.SnapshotDir, "chunks", fmt.Sprintf("chunk-%d", chunk))
+	chunkFile := filepath.Join(snapshotChunkDir(s.cfg.SnapshotDir, height, format), fmt.Sprintf("chunk-%d", chunk))
 	if _, err := os.Open(chunkFile); err != nil {
 		return nil, fmt.Errorf("chunk %d does not exist in snapshot at height %d", chunk, height)
 	}
@@ -381,4 +425,24 @@ func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunk ui
 	}
 
 	return bts, nil
+}
+
+func snapshotHeightDir(snapshotDir string, height uint64) string {
+	return filepath.Join(snapshotDir, fmt.Sprintf("block-%d", height))
+}
+
+func snapshotFormatDir(snapshotDir string, height uint64, format uint32) string {
+	return filepath.Join(snapshotHeightDir(snapshotDir, height), fmt.Sprintf("format-%d", format))
+}
+
+func snapshotChunkDir(snapshotDir string, height uint64, format uint32) string {
+	return filepath.Join(snapshotFormatDir(snapshotDir, height, format), "chunks")
+}
+
+func snapshotChunkFile(snapshotDir string, height uint64, format uint32, chunkIdx uint32) string {
+	return filepath.Join(snapshotChunkDir(snapshotDir, height, format), fmt.Sprintf("chunk-%d", chunkIdx))
+}
+
+func SnapshotHeaderFile(snapshotDir string, height uint64, format uint32) string {
+	return filepath.Join(snapshotFormatDir(snapshotDir, height, format), "header.json")
 }

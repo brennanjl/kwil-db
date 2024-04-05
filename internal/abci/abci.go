@@ -15,6 +15,7 @@ import (
 	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/core/types/transactions"
 	"github.com/kwilteam/kwil-db/internal/ident"
+	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 
 	abciTypes "github.com/cometbft/cometbft/abci/types"
@@ -91,7 +92,7 @@ type AbciApp struct {
 
 	// Expected AppState after bootstrapping the node with a given snapshot,
 	// state gets updated with the bootupState after bootstrapping
-	bootupState appState
+	// bootupState appState
 
 	txApp TxApp
 
@@ -491,17 +492,11 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 		return nil, errors.New("bootstrapper not set")
 	}
 
-	// _, _, err := a.bootstrapper.ApplySnapshotChunk(req.Chunk, req.Index)
-	// if err != nil {
-	// 	// return &abciTypes.ResponseApplySnapshotChunk{Result: abciStatus(status), RefetchChunks: refetchChunks}, nil
-	// 	return nil, err
-	// }
-
-	if a.statesyncer.IsDBRestored() {
-		// NOTE: when snapshot is implemented, the bootstrapper should be able
-		// to meta.SetChainState.
-		a.log.Info("Bootstrapped database successfully")
+	err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
+	if err != nil {
+		return &abciTypes.ResponseApplySnapshotChunk{Result: 5, RefetchChunks: []uint32{req.Index}}, nil
 	}
+
 	return &abciTypes.ResponseApplySnapshotChunk{Result: abciTypes.ResponseApplySnapshotChunk_ACCEPT, RefetchChunks: nil}, nil
 }
 
@@ -528,8 +523,9 @@ func (a *AbciApp) ListSnapshots(ctx context.Context, req *abciTypes.RequestListS
 			Format:   snapshot.Format,
 			Chunks:   snapshot.ChunkCount,
 			Hash:     snapshot.SnapshotHash,
-			Metadata: bts,
+			Metadata: make([]byte, len(bts)),
 		}
+		copy(sp.Metadata, bts)
 
 		res = append(res, sp)
 	}
@@ -552,9 +548,20 @@ func (a *AbciApp) LoadSnapshotChunk(ctx context.Context, req *abciTypes.RequestL
 // OfferSnapshot is on the state sync connection
 func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOfferSnapshot) (*abciTypes.ResponseOfferSnapshot, error) {
 	// snapshot := convertABCISnapshots(req.Snapshot)
-	// if a.bootstrapper.OfferSnapshot(snapshot) != nil {
-	// 	return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
-	// }
+	var snapshot statesync.SnapshotHeader
+	err := json.Unmarshal(req.Snapshot.Metadata, &snapshot)
+	if err != nil {
+		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, err
+	}
+
+	if a.statesyncer == nil {
+		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
+	}
+
+	err = a.statesyncer.OfferSnapshot(&snapshot)
+	if err != nil {
+		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
+	}
 	// a.bootupState.appHash = req.Snapshot.Hash
 	// a.bootupState.height = int64(snapshot.Height)
 	return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_ACCEPT}, nil

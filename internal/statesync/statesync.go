@@ -1,12 +1,13 @@
 package statesync
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/kwilteam/kwil-db/core/log"
 	"go.uber.org/zap"
@@ -51,29 +52,32 @@ Trust related:
 type StateSyncer struct {
 	dbConfig DBConfig
 
-	inProgress           bool
-	receivedSnapshotsDir string
+	inProgress   bool
+	snapshotsDir string
 
 	snapshot *SnapshotHeader
 	// Chunks received till now
-	chunks      map[uint32]bool
-	chunkHashes map[uint32][]byte
-	rcvdChunks  uint32
+	chunks     map[uint32]bool
+	rcvdChunks uint32
 
 	// Logger
 	log log.Logger
 }
 
 // Do we always expect the chunks to be received in order?
-
 func NewStateSyncer(cfg DBConfig, dir string, logger log.Logger) *StateSyncer {
 	return &StateSyncer{
-		dbConfig:             cfg,
-		receivedSnapshotsDir: dir,
-		inProgress:           false,
-		rcvdChunks:           0,
-		log:                  logger,
+		dbConfig:     cfg,
+		snapshotsDir: dir,
+		inProgress:   false,
+		rcvdChunks:   0,
+		log:          logger,
 	}
+}
+
+// TODO: maybe change the behavior of this function
+func (ss *StateSyncer) IsDBRestored() bool {
+	return ss.rcvdChunks == ss.snapshot.ChunkCount
 }
 
 func (ss *StateSyncer) OfferSnapshot(snapshot *SnapshotHeader) error {
@@ -88,12 +92,9 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *SnapshotHeader) error {
 	ss.snapshot = snapshot
 	ss.inProgress = true
 	ss.chunks = make(map[uint32]bool, snapshot.ChunkCount)
-	ss.chunkHashes = make(map[uint32][]byte, snapshot.ChunkCount)
 	ss.rcvdChunks = 0
 
-	// TODO: WHy not use the snapshot dir to store received snapshots?
-	// Create a directory to store the chunks
-	dir := filepath.Join(ss.receivedSnapshotsDir, fmt.Sprintf("%d", snapshot.Height), "chunks")
+	dir := snapshotChunkDir(ss.snapshotsDir, snapshot.Height, snapshot.Format)
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
 		ss.log.Error("Failed to create directory", zap.String("dir", dir), zap.Error(err))
@@ -101,9 +102,12 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *SnapshotHeader) error {
 	}
 
 	// store snapshot header on disk
-	headerFile := filepath.Join(ss.receivedSnapshotsDir, fmt.Sprintf("%d", snapshot.Height), "header.json")
+	headerFile := SnapshotHeaderFile(ss.snapshotsDir, snapshot.Height, snapshot.Format)
 	err = snapshot.SaveAs(headerFile)
 	if err != nil {
+		// TODO: delete the directory created above
+		deleteSnapshotDir(snapshotHeightDir(ss.snapshotsDir, snapshot.Height))
+
 		ss.log.Error("Failed to save snapshot header", zap.String("file", headerFile), zap.Error(err))
 		return fmt.Errorf("failed to save snapshot header: %w", err)
 	}
@@ -128,11 +132,18 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 		return fmt.Errorf("invalid chunk index")
 	}
 
-	ss.chunks[index] = true
-	ss.rcvdChunks++
+	// Validate the chunk hash
+	hash := sha256.New()
+	hash.Write(chunk)
+	chunkHash := hash.Sum(nil)
+
+	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index]) {
+		ss.log.Error("Invalid chunk hash", zap.Uint32("index", index), zap.String("Chunk Hash", fmt.Sprintf("%x", chunkHash)), zap.String("Expected Hash", fmt.Sprintf("%x", ss.snapshot.ChunkHashes[index])))
+		return fmt.Errorf("invalid chunk hash")
+	}
 
 	// store the chunk on disk
-	chunkFileName := filepath.Join(ss.receivedSnapshotsDir, fmt.Sprintf("%d", ss.snapshot.Height), "chunks", fmt.Sprintf("chunk-%d", index))
+	chunkFileName := snapshotChunkFile(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format, index)
 	chunkFile, err := os.Create(chunkFileName)
 	if err != nil {
 		ss.log.Error("Failed to create chunk file", zap.String("file", chunkFileName), zap.Error(err))
@@ -148,6 +159,9 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 
 	ss.log.Info("Applied chunk", zap.Uint32("index", index))
 
+	ss.chunks[index] = true
+	ss.rcvdChunks++
+
 	// Check if all chunks have been received
 	if ss.rcvdChunks == ss.snapshot.ChunkCount {
 		ss.log.Info("All chunks received")
@@ -161,7 +175,6 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 		ss.inProgress = false
 		ss.snapshot = nil
 		ss.chunks = nil
-		ss.chunkHashes = nil
 		ss.rcvdChunks = 0
 
 		// TODO: Delete the chunks stored on disks, probably not if using the snapshot dir to store received snapshots and reuse them for future nodes?
@@ -170,16 +183,12 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	return nil
 }
 
-func (ss *StateSyncer) IsDBRestored() bool {
-	return ss.rcvdChunks == ss.snapshot.ChunkCount
-}
-
 func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	// Unzip the chunks and restore the db
 	// Restore the db from the sql dump
 
-	snapshotDir := filepath.Join(ss.receivedSnapshotsDir, fmt.Sprintf("%d", ss.snapshot.Height), "chunks")
-	streamer := NewStreamer(ss.snapshot.ChunkCount, snapshotDir, ss.log)
+	chunksDir := snapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
+	streamer := NewStreamer(ss.snapshot.ChunkCount, chunksDir, ss.log)
 	defer streamer.Close()
 
 	gzipReader, err := gzip.NewReader(streamer)

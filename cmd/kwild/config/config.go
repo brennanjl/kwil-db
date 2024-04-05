@@ -495,13 +495,7 @@ func DefaultConfig() *KwildConfig {
 			DBPort:             "5432", // ignored with unix socket, but applies if IP used for DBHost
 			DBUser:             "kwild",
 			DBName:             "kwild",
-			// SnapshotConfig: SnapshotConfig{
-			// 	Enabled:         false,
-			// 	RecurringHeight: uint64(10000),
-			// 	MaxSnapshots:    3,
-			// 	SnapshotDir:     DefaultSnapshotsDir,
-			// },
-			Extensions: make(map[string]map[string]string),
+			Extensions:         make(map[string]map[string]string),
 		},
 		Logging: &Logging{
 			Level:        "info",
