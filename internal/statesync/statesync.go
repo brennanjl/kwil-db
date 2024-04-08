@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 
@@ -188,27 +189,44 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	// Unzip the chunks and restore the db
 	// Restore the db from the sql dump
-
-	chunksDir := snapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
-	streamer := NewStreamer(ss.snapshot.ChunkCount, chunksDir, ss.log)
-	defer streamer.Close()
-
-	gzipReader, err := gzip.NewReader(streamer)
-	if err != nil {
-		ss.log.Error("Failed to create gzip reader", zap.Error(err))
-		return fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzipReader.Close()
-
 	cmd := exec.CommandContext(ctx, "psql", "-U", "kwild", "-h", "localhost", "-p", "5435", "-d", "kwild")
-	cmd.Stdin = streamer
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
+	if err := ss.DecompressChunkStreams(stdinPipe); err != nil {
+		return err
+	}
+
+	stdinPipe.Close() // signals the end of the input
+
 	if err := cmd.Wait(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (ss *StateSyncer) DecompressChunkStreams(output io.Writer) error {
+	chunksDir := snapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
+	streamer := NewStreamer(ss.snapshot.ChunkCount, chunksDir, ss.log)
+	defer streamer.Close()
+
+	// Create a gzip reader
+	gzipReader, err := gzip.NewReader(streamer)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzipReader.Close()
+
+	_, err = io.Copy(output, gzipReader)
+	if err != nil {
+		return fmt.Errorf("failed to decompress chunk streams: %w", err)
 	}
 	return nil
 }

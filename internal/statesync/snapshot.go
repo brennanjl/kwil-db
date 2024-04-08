@@ -1,22 +1,16 @@
 package statesync
 
 import (
-	"bufio"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -50,10 +44,10 @@ import (
 					chunk-n
 */
 
-const (
-	// chunkSize = 16 * 1024 * 1024 // 16MB
-	chunkSize int64 = 5 * 1024 // 10KB
-)
+// const (
+// 	// chunkSize = 16 * 1024 * 1024 // 16MB
+// 	chunkSize int64 = 5 * 1024 // 10KB
+// )
 
 type DBConfig struct {
 	DBUser string
@@ -170,7 +164,7 @@ func (s *SnapshotStore) IsSnapshotDue(height uint64) bool {
 // It creates a directory based on the height of the snapshot and stores the snapshot chunks and header file in the directory.
 func (s *SnapshotStore) CreateSnapshot(ctx context.Context, height uint64, snapshotID string) error {
 	// Create a snapshot of the database at the given height
-	if err := s.dbSnapshot(ctx, height, snapshotID); err != nil {
+	if err := s.createSnapshotAtHeight(ctx, height, snapshotID); err != nil {
 		return fmt.Errorf("failed to create snapshot at height %d: %w", height, err)
 	}
 
@@ -184,217 +178,29 @@ func (s *SnapshotStore) CreateSnapshot(ctx context.Context, height uint64, snaps
 	return nil
 }
 
-func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, snapshotID string) error {
-	// Flow: pg_dump | sed | gzip > chunk files of 16MB
-	pgDumpCmd := exec.CommandContext(ctx,
-		"pg_dump",
-		// File format options
-		"--dbname", "kwild",
-		"--format", "plain",
-		// List of schemas to include in the dump
-		"--schema", "kwild_accts",
-		"--schema", "kwild_voting",
-		"--schema", "kwild_chain",
-		"--schema", "ds_*",
-		"--no-unlogged-table-data",
-		"--no-comments",
-		"--no-publications",
-		"--no-unlogged-table-data",
-		"--no-tablespaces",
-		"--no-table-access-method",
-		"--no-security-labels",
-		"--no-subscriptions",
-		"--large-objects",
-		// Snapshot options
-		"--snapshot", snapshotID, // Snapshot ID ensures a consistent snapshot taken at the given block boundary across all nodes
-		// Connection options
-		"-U", s.cfg.DbConfig.DBUser, // Is this needed?
-		"-h", s.cfg.DbConfig.DBHost,
-		"-p", s.cfg.DbConfig.DBPort,
-	)
-
-	fmt.Println("Executing snapshots:   ", pgDumpCmd.String())
-	// Set up the sed command to remove comments, empty lines, and SET and SELECT statements
-	sedCmd := exec.CommandContext(ctx, "sed", "-e", "/^--/d", "-e", "/^$/d", "-e", "/^SET/d", "-e", "/^SELECT/d")
-
-	// Create a pipe between pg_dump and sed commands
-	reader, writer := io.Pipe()
-	pgDumpCmd.Stdout = writer
-	sedCmd.Stdin = reader
-
-	// Capture stdout and stderr from sed (the final output)
-	sedStdoutPipe, err := sedCmd.StdoutPipe()
+func (s *SnapshotStore) createSnapshotAtHeight(ctx context.Context, height uint64, snapshotID string) error {
+	// Stage1: Dump the database at the given height and snapshot ID
+	dump1, err := s.dbSnapshot(ctx, height, 0, snapshotID)
 	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe from sed command: %w", err)
+		return fmt.Errorf("failed to create snapshot at height %d: %w", height, err)
 	}
 
-	// Start the sed command first
-	if err := sedCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start sed command: %w", err)
-	}
-
-	// Then start the pg_dump command
-	if err := pgDumpCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start pg_dump command: %w", err)
-	}
-
-	// Close the writer when pg_dump completes to signal EOF to sed
-	go func() {
-		if err := pgDumpCmd.Wait(); err != nil {
-			fmt.Printf("pg_dump command failed: %v\n", err)
-		}
-		writer.Close()
-	}()
-
-	var chunkErr error
-	chunkIdx := 0
-	var fileSz uint64
-	var hashes [][]byte
-	hasher := sha256.New()
-
-	// Default format 0 is gzip compressed plain SQL dump
-	// Dir name
-	snapshotHeightDir := snapshotHeightDir(s.cfg.SnapshotDir, height)
-	snapshotDir := snapshotFormatDir(s.cfg.SnapshotDir, height, 0)
-	chunkDir := snapshotChunkDir(s.cfg.SnapshotDir, height, 0)
-
-	if err := os.MkdirAll(chunkDir, 0755); err != nil {
-		return fmt.Errorf("failed to create snapshot directory %s at height %d: %w", chunkDir, height, err)
-	}
-	outputFile := snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunkIdx))
-	chunkFile, err := os.Create(outputFile)
+	// Stage2: Sanitize the dump
+	dump2, err := s.sanitizeDump(height, 0, dump1)
 	if err != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
+		return fmt.Errorf("failed to sanitize snapshot at height %d: %w", height, err)
 	}
 
-	chunkReader := bufio.NewReader(sedStdoutPipe)
-	gzipWriter := gzip.NewWriter(chunkFile)
-
-	var curChunkSize int64
-
-	// split the output into chunks of 16MB (Max chunks allowed by CometBFT)
-	// https://docs.cometbft.com/v0.38/spec/p2p/legacy-docs/messages/state-sync#chunkresponse
-
-	for {
-		buf := make([]byte, 4096)
-		n, err := chunkReader.Read(buf)
-		fileSz += uint64(n)
-		if n > 0 {
-			// Write upto 16MB - curChunkSize to the chunk file
-			if curChunkSize+int64(n) > chunkSize {
-				// Write only upto 16MB - curChunkSize
-				_, err := gzipWriter.Write(buf[:chunkSize-curChunkSize])
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-
-				err = gzipWriter.Close()
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to close gzip writer for chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-				err = chunkFile.Close()
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to close chunk file %s at height %d: %w", outputFile, height, err)
-					break
-				}
-				hash, err := utils.HashFile(outputFile)
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to hash chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-				hashes = append(hashes, hash)
-				hasher.Write(hash)
-
-				chunkIdx++
-				outputFile = snapshotChunkFile(s.cfg.SnapshotDir, height, 0, uint32(chunkIdx))
-				chunkFile, err = os.Create(outputFile)
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to create chunk file %s at height %d: %w", outputFile, height, err)
-					break
-				}
-				gzipWriter = gzip.NewWriter(chunkFile)
-
-				// Write the remaining bytes to the new chunk file
-				_, err = gzipWriter.Write(buf[chunkSize-curChunkSize : n])
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-				curChunkSize = int64(n) - (chunkSize - curChunkSize)
-			} else {
-				_, err := gzipWriter.Write(buf[:n])
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to write chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-				curChunkSize += int64(n)
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				// Last chunk
-				hash, err := utils.HashFile(outputFile)
-				if err != nil {
-					chunkErr = fmt.Errorf("failed to hash chunk %d at height %d: %w", chunkIdx, height, err)
-					break
-				}
-				hashes = append(hashes, hash)
-				hasher.Write(hash)
-				break
-			} else {
-				chunkErr = fmt.Errorf("failed to read chunk %d at height %d: %w", chunkIdx, height, err)
-				break
-			}
-		}
-	}
-
-	if chunkErr != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return chunkErr
-	}
-
-	err = gzipWriter.Close()
+	// Stage3: Compress the dump
+	dump3, err := s.compressDump(ctx, height, 0, dump2, true)
 	if err != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return fmt.Errorf("failed to close gzip writer for chunk %d at height %d: %w", chunkIdx, height, err)
+		return fmt.Errorf("failed to compress snapshot at height %d: %w", height, err)
 	}
 
-	err = chunkFile.Close()
-	if err != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return fmt.Errorf("failed to close chunk file %s at height %d: %w", outputFile, height, err)
+	// Stage4: Split the dump into chunks
+	if err := s.splitDump(height, 0, dump3); err != nil {
+		return fmt.Errorf("failed to split snapshot into chunks at height %d: %w", height, err)
 	}
-
-	if err := sedCmd.Wait(); err != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return fmt.Errorf("pg_dump command failed: %w", err)
-	}
-
-	// Create the snapshot header file
-
-	header := &SnapshotHeader{
-		Height:       height,
-		Format:       0, // Standard gzip compressed plain SQL dump
-		ChunkCount:   uint32(chunkIdx + 1),
-		ChunkHashes:  hashes,
-		SnapshotHash: hasher.Sum(nil), // Calculate hash of the snapshot
-		SnapshotSize: fileSz,          // Calculate size of the snapshot
-	}
-	if err := header.SaveAs(filepath.Join(snapshotDir, "header.json")); err != nil {
-		deleteSnapshotDir(snapshotHeightDir)
-		return fmt.Errorf("failed to save snapshot header at height %d: %w", height, err)
-	}
-
-	// Add the snapshot to the list of snapshots
-	s.snapshotsMtx.Lock()
-	s.snapshots[height] = header
-	s.snapshotHeights = append(s.snapshotHeights, height)
-	s.snapshotsMtx.Unlock()
-
-	s.log.Info("Snapshot created successfully", zap.Int64("height", int64(height)), zap.String("snapshotID", snapshotID))
 	return nil
 }
 
