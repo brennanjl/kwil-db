@@ -208,6 +208,26 @@ func (r *TxApp) ChainInfo(ctx context.Context) (int64, []byte, error) {
 	return height, appHash, nil
 }
 
+// ReloadDB reloads the database state into the engine.
+func (r *TxApp) ReloadDB(ctx context.Context) error {
+	if r.height == 0 && r.appHash == nil {
+		// Replay using StateSync (GenesisInit is not called)
+
+		tx, err := r.Database.BeginReadTx(ctx)
+		if err != nil {
+			return err
+		}
+
+		err = r.Engine.Reload(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		return tx.Commit(ctx)
+	}
+	return nil
+}
+
 // UpdateValidator updates a validator's power.
 // It can only be called in between Begin and Finalize.
 // The value passed as power will simply replace the current power.

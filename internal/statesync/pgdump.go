@@ -56,7 +56,9 @@ func (s *SnapshotStore) dbSnapshot(ctx context.Context, height uint64, format ui
 		"--schema", "kwild_voting",
 		"--schema", "kwild_chain",
 		"--schema", "kwild_accts",
+		"--schema", "kwild_internal",
 		"--schema", "ds_*",
+		"-T", "kwild_internal.sentry", // Exclude the sentry table
 		"--no-unlogged-table-data",
 		"--no-comments",
 		"--create",

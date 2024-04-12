@@ -26,12 +26,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// appState is an in-memory representation of the state of the application.
-type appState struct {
-	height  int64
-	appHash []byte
-}
-
 // AbciConfig includes data that defines the chain and allow the application to
 // satisfy the ABCI Application interface.
 type AbciConfig struct {
@@ -89,10 +83,6 @@ type AbciApp struct {
 	statesyncer StateSyncModule
 
 	log log.Logger
-
-	// Expected AppState after bootstrapping the node with a given snapshot,
-	// state gets updated with the bootupState after bootstrapping
-	// bootupState appState
 
 	txApp TxApp
 
@@ -418,6 +408,11 @@ func (a *AbciApp) Info(ctx context.Context, _ *abciTypes.RequestInfo) (*abciType
 		}
 
 		a.validatorAddressToPubKey[addr] = val.PubKey
+	}
+
+	err = a.txApp.ReloadDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload db: %w", err)
 	}
 
 	a.log.Info("ABCI application is ready", zap.Int64("height", height))
