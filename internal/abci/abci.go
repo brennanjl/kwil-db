@@ -487,9 +487,16 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 		return nil, errors.New("bootstrapper not set")
 	}
 
-	err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
+	refetch, err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
 	if err != nil {
-		return &abciTypes.ResponseApplySnapshotChunk{Result: 5, RefetchChunks: []uint32{req.Index}}, nil
+		var refetchChunks []uint32
+		if refetch {
+			refetchChunks = append(refetchChunks, req.Index)
+		}
+		return &abciTypes.ResponseApplySnapshotChunk{
+			Result:        statesync.ToABCIApplySnapshotChunkResponse(err),
+			RefetchChunks: refetchChunks,
+		}, nil
 	}
 
 	return &abciTypes.ResponseApplySnapshotChunk{Result: abciTypes.ResponseApplySnapshotChunk_ACCEPT, RefetchChunks: nil}, nil
@@ -501,10 +508,7 @@ func (a *AbciApp) ListSnapshots(ctx context.Context, req *abciTypes.RequestListS
 		return &abciTypes.ResponseListSnapshots{}, nil
 	}
 
-	snapshots, err := a.snapshotter.ListSnapshots()
-	if err != nil {
-		return &abciTypes.ResponseListSnapshots{}, nil
-	}
+	snapshots := a.snapshotter.ListSnapshots()
 
 	var res []*abciTypes.Snapshot
 	for _, snapshot := range snapshots {
@@ -543,7 +547,7 @@ func (a *AbciApp) LoadSnapshotChunk(ctx context.Context, req *abciTypes.RequestL
 // OfferSnapshot is on the state sync connection
 func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOfferSnapshot) (*abciTypes.ResponseOfferSnapshot, error) {
 	// snapshot := convertABCISnapshots(req.Snapshot)
-	var snapshot statesync.SnapshotHeader
+	var snapshot statesync.Snapshot
 	err := json.Unmarshal(req.Snapshot.Metadata, &snapshot)
 	if err != nil {
 		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, err
@@ -892,6 +896,32 @@ func (a *AbciApp) ProcessProposal(ctx context.Context, req *abciTypes.RequestPro
 }
 
 func (a *AbciApp) Query(ctx context.Context, req *abciTypes.RequestQuery) (*abciTypes.ResponseQuery, error) {
+	if req.Path == "/snapshot/height" {
+		if a.snapshotter == nil {
+			return &abciTypes.ResponseQuery{}, nil
+		}
+		height := string(req.Data)
+		snapshots := a.snapshotter.ListSnapshots()
+		exists := false
+		var snapshot *statesync.Snapshot
+		for _, s := range snapshots {
+			if height == fmt.Sprintf("%d", s.Height) {
+				exists = true
+				snapshot = s
+				break
+			}
+		}
+
+		if !exists {
+			return &abciTypes.ResponseQuery{}, nil
+		}
+
+		bts, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		return &abciTypes.ResponseQuery{Value: bts}, nil
+	}
 	return &abciTypes.ResponseQuery{}, nil
 }
 

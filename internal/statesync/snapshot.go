@@ -69,16 +69,16 @@ type SnapshotConfig struct {
 type SnapshotStore struct {
 	cfg *SnapshotConfig
 	// Snapshot store state
-	snapshots       map[uint64]*SnapshotHeader // Map of snapshot height to snapshot header
-	snapshotHeights []uint64                   // List of snapshot heights
-	snapshotsMtx    sync.RWMutex               // Protects access to snapshots and snapshotHeights
+	snapshots       map[uint64]*Snapshot // Map of snapshot height to snapshot header
+	snapshotHeights []uint64             // List of snapshot heights
+	snapshotsMtx    sync.RWMutex         // Protects access to snapshots and snapshotHeights
 
 	log log.Logger
 }
 
-// SnapshotHeader is the header of a snapshot file representing the snapshot of the database at a certain height.
+// Snapshot is the header of a snapshot file representing the snapshot of the database at a certain height.
 // It contains the height, format, chunk count, hash, size, and name of the snapshot.
-type SnapshotHeader struct {
+type Snapshot struct {
 	Height       uint64   `json:"height"`
 	Format       uint32   `json:"format"`
 	ChunkHashes  [][]byte `json:"chunk_hashes"`
@@ -87,7 +87,7 @@ type SnapshotHeader struct {
 	SnapshotSize uint64   `json:"size"`
 }
 
-func (s *SnapshotHeader) SaveAs(file string) error {
+func (s *Snapshot) SaveAs(file string) error {
 	bts, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -95,12 +95,12 @@ func (s *SnapshotHeader) SaveAs(file string) error {
 	return os.WriteFile(file, bts, 0644)
 }
 
-func LoadSnapshotHeader(file string) (*SnapshotHeader, error) {
+func LoadSnapshotHeader(file string) (*Snapshot, error) {
 	bts, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-	var header SnapshotHeader
+	var header Snapshot
 	if err := json.Unmarshal(bts, &header); err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func LoadSnapshotHeader(file string) (*SnapshotHeader, error) {
 func NewSnapshotStore(cfg *SnapshotConfig, logger log.Logger) (*SnapshotStore, error) {
 	ss := &SnapshotStore{
 		cfg:             cfg,
-		snapshots:       make(map[uint64]*SnapshotHeader),
+		snapshots:       make(map[uint64]*Snapshot),
 		snapshotHeights: make([]uint64, 0),
 		log:             logger,
 	}
@@ -140,7 +140,7 @@ func NewSnapshotStore(cfg *SnapshotConfig, logger log.Logger) (*SnapshotStore, e
 		ss.snapshotHeights = append(ss.snapshotHeights, heightInt)
 
 		// Load snapshot header
-		headerFile := SnapshotHeaderFile(cfg.SnapshotDir, heightInt, 0)
+		headerFile := snapshotHeaderFile(cfg.SnapshotDir, heightInt, 0)
 		header, err := LoadSnapshotHeader(headerFile)
 		if err != nil {
 			logger.Error("Failed to load snapshot header", zap.String("file", headerFile), zap.Error(err))
@@ -186,7 +186,7 @@ func (s *SnapshotStore) createSnapshotAtHeight(ctx context.Context, height uint6
 	}
 
 	// Stage2: Sanitize the dump
-	dump2, err := s.sanitizeDump(height, 0, dump1)
+	dump2, hash, err := s.sanitizeDump(height, 0, dump1)
 	if err != nil {
 		return fmt.Errorf("failed to sanitize snapshot at height %d: %w", height, err)
 	}
@@ -198,7 +198,7 @@ func (s *SnapshotStore) createSnapshotAtHeight(ctx context.Context, height uint6
 	}
 
 	// Stage4: Split the dump into chunks
-	if err := s.splitDump(height, 0, dump3); err != nil {
+	if err := s.splitDump(height, 0, dump3, hash); err != nil {
 		return fmt.Errorf("failed to split snapshot into chunks at height %d: %w", height, err)
 	}
 	return nil
@@ -234,16 +234,16 @@ func (s *SnapshotStore) deleteOldestSnapshot() error {
 }
 
 // List snapshots should return the metadata corresponding to all the existing snapshots.
-func (s *SnapshotStore) ListSnapshots() ([]*SnapshotHeader, error) {
+func (s *SnapshotStore) ListSnapshots() []*Snapshot {
 	// Make copy of snapshots
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()
 
-	snaps := make([]*SnapshotHeader, len(s.snapshots))
+	snaps := make([]*Snapshot, len(s.snapshots))
 	counter := 0
 	for _, snap := range s.snapshots {
 		// Deep copy the snapshot header
-		header := &SnapshotHeader{
+		header := &Snapshot{
 			Height:       snap.Height,
 			Format:       snap.Format,
 			ChunkCount:   snap.ChunkCount,
@@ -261,7 +261,7 @@ func (s *SnapshotStore) ListSnapshots() ([]*SnapshotHeader, error) {
 		counter++
 	}
 
-	return snaps, nil
+	return snaps
 }
 
 // LoadSnapshotChunk loads a snapshot chunk at the given height and chunk index of given format.
@@ -312,6 +312,6 @@ func snapshotChunkFile(snapshotDir string, height uint64, format uint32, chunkId
 	return filepath.Join(snapshotChunkDir(snapshotDir, height, format), fmt.Sprintf("chunk-%d", chunkIdx))
 }
 
-func SnapshotHeaderFile(snapshotDir string, height uint64, format uint32) string {
+func snapshotHeaderFile(snapshotDir string, height uint64, format uint32) string {
 	return filepath.Join(snapshotFormatDir(snapshotDir, height, format), "header.json")
 }

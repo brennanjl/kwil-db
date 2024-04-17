@@ -481,7 +481,7 @@ func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
 	}
 
 	// create state syncer
-	return statesync.NewStateSyncer(dbCfg, cfg.Snapshots.SnapshotDir, *d.log.Named("stateSyncer"))
+	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir, d.genesisCfg.ChainID, d.cfg.ChainCfg.StateSync.RPCServers, *d.log.Named("stateSyncer"))
 }
 
 func fileExists(name string) bool {

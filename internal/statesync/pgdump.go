@@ -99,19 +99,19 @@ type HashedLine struct {
 // sanitizeDump sanitizes the dump file to make it deterministic
 // TODO: What if sorting is done based on the first column? or maybe based on the primary key?
 // Just sorting based on the first column is quite easy but might not work if its not unique
-func (s *SnapshotStore) sanitizeDump(height uint64, format uint32, dumpFile string) (string, error) {
+func (s *SnapshotStore) sanitizeDump(height uint64, format uint32, dumpFile string) (string, []byte, error) {
 	// start time
 	startTime := time.Now()
 
 	// check if the dump file exists
 	inputFile, err := os.Open(dumpFile)
 	if err != nil {
-		return "", fmt.Errorf("failed to open dump file: %w", err)
+		return "", nil, fmt.Errorf("failed to open dump file: %w", err)
 	}
 	defer inputFile.Close()
 	pgDumpFile, err := os.Open(dumpFile)
 	if err != nil {
-		return "", fmt.Errorf("failed to open dump file: %w", err)
+		return "", nil, fmt.Errorf("failed to open dump file: %w", err)
 	}
 
 	// sanitized dump file
@@ -119,7 +119,7 @@ func (s *SnapshotStore) sanitizeDump(height uint64, format uint32, dumpFile stri
 	sanitizedDumpFile := filepath.Join(dir, "stage2output.sql")
 	outputFile, err := os.Create(sanitizedDumpFile)
 	if err != nil {
-		return "", fmt.Errorf("failed to create sanitized dump file: %w", err)
+		return "", nil, fmt.Errorf("failed to create sanitized dump file: %w", err)
 	}
 	defer outputFile.Close()
 
@@ -160,26 +160,26 @@ func (s *SnapshotStore) sanitizeDump(height uint64, format uint32, dumpFile stri
 					// Seek to the offset of the line in the input file
 					_, err := pgDumpFile.Seek(hashedLine.offset, 0)
 					if err != nil {
-						return "", fmt.Errorf("failed to seek to offset: %w", err)
+						return "", nil, fmt.Errorf("failed to seek to offset: %w", err)
 					}
 
 					// Read the line from the input file
 					lineBytes, err := bufio.NewReader(pgDumpFile).ReadBytes('\n')
 					if err != nil {
-						return "", fmt.Errorf("failed to read line from input file: %w", err)
+						return "", nil, fmt.Errorf("failed to read line from input file: %w", err)
 					}
 
 					// Write the line to the output file
 					_, err = outputFile.Write(lineBytes)
 					if err != nil {
-						return "", fmt.Errorf("failed to write to sanitized dump file: %w", err)
+						return "", nil, fmt.Errorf("failed to write to sanitized dump file: %w", err)
 					}
 				}
 
 				// Write the end of COPY block to the output file
 				_, err = outputFile.WriteString(line + "\n")
 				if err != nil {
-					return "", fmt.Errorf("failed to write to sanitized dump file: %w", err)
+					return "", nil, fmt.Errorf("failed to write to sanitized dump file: %w", err)
 				}
 
 				// Clear the lineHashes array
@@ -218,27 +218,32 @@ func (s *SnapshotStore) sanitizeDump(height uint64, format uint32, dumpFile stri
 				// write the line to the output file
 				_, err := outputFile.WriteString(line + "\n")
 				if err != nil {
-					return "", fmt.Errorf("failed to write to sanitized dump file: %w", err)
+					return "", nil, fmt.Errorf("failed to write to sanitized dump file: %w", err)
 				}
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to scan the dump file: %w", err)
+		return "", nil, fmt.Errorf("failed to scan the dump file: %w", err)
 	}
 
 	// remove the dump file
-	err = os.Remove(dumpFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to remove dump file: %w", err)
-	}
+	// err = os.Remove(dumpFile)
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to remove dump file: %w", err)
+	// }
 
 	// end time
 	endTime := time.Now()
 	s.log.Info("Dump sanitized", zap.Uint64("height", height), zap.String("dumpFile", dumpFile), zap.Duration("duration", endTime.Sub(startTime)))
 
-	return sanitizedDumpFile, nil
+	hash, err := utils.HashFile(sanitizedDumpFile)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to hash sanitized dump file: %w", err)
+	}
+
+	return sanitizedDumpFile, hash, nil
 }
 
 // CompressDump compresses the sanitized dump file using gzip compression
@@ -306,7 +311,7 @@ func (s *SnapshotStore) compressDump(ctx context.Context, height uint64, format 
 }
 
 // SplitDump splits the compressed dump file into chunks of fixed size (16MB)
-func (s *SnapshotStore) splitDump(height uint64, format uint32, dumpFile string) error {
+func (s *SnapshotStore) splitDump(height uint64, format uint32, dumpFile string, sqlDumpHash []byte) error {
 	// start time
 	startTime := time.Now()
 
@@ -371,20 +376,15 @@ func (s *SnapshotStore) splitDump(height uint64, format uint32, dumpFile string)
 		return fmt.Errorf("file size mismatch: %d != %d", fileSize, fileInfo.Size())
 	}
 
-	hash, err := utils.HashFile(dumpFile)
-	if err != nil {
-		return fmt.Errorf("failed to hash dump file: %w", err)
-	}
-
-	header := &SnapshotHeader{
+	header := &Snapshot{
 		Height:       height,
 		Format:       format,
 		ChunkCount:   chunkIndex,
 		ChunkHashes:  hashes,
-		SnapshotHash: hash,
+		SnapshotHash: sqlDumpHash,
 		SnapshotSize: fileSize,
 	}
-	headerFile := SnapshotHeaderFile(s.cfg.SnapshotDir, height, format)
+	headerFile := snapshotHeaderFile(s.cfg.SnapshotDir, height, format)
 	err = header.SaveAs(headerFile)
 	if err != nil {
 		return fmt.Errorf("failed to save snapshot header: %w", err)

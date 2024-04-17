@@ -89,7 +89,7 @@ func (d *KwilCliDriver) SupportBatch() bool {
 	return false
 }
 
-func (d *KwilCliDriver) account(ctx context.Context, acctID []byte) (*types.Account, error) {
+func (d *KwilCliDriver) account(_ context.Context, acctID []byte) (*types.Account, error) {
 	cmd := d.newKwilCliCmd("account", "balance", hex.EncodeToString(acctID))
 	out, err := mustRun(cmd, d.logger)
 	if err != nil {
@@ -404,7 +404,7 @@ func (d *KwilCliDriver) ChainInfo(_ context.Context) (*types.ChainInfo, error) {
 ///////// helper functions
 
 // mustRun runs the give command, and parse stdout
-func mustRun(cmd *exec.Cmd, logger log.Logger) (*cliResponse, error) {
+func mustRun(cmd *exec.Cmd, _ log.Logger) (*cliResponse, error) {
 	cmd.Stderr = os.Stderr
 	//// here we capture the stdout
 	var out bytes.Buffer
