@@ -9,8 +9,7 @@ import (
 	"github.com/kwilteam/kwil-db/core/log"
 )
 
-// This file deals with decompressing and streaming the decompressed chunks to the db restore module
-
+// Utility to stream chunks of a snapshot
 type Streamer struct {
 	log               log.Logger
 	numChunks         uint32

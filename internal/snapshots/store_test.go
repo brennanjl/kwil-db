@@ -9,14 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-/*
-    ListSnapshots
-
-	CreateSnapshot
-		- Snapshotter can be mocked -> add a new folder under temp dir,
-	RegisterSnapshot
-*/
-
 type MockSnapshotter struct {
 	snapshotDir string
 }

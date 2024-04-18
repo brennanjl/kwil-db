@@ -101,8 +101,8 @@ func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapsho
 // The pg dump is stored as "/stage1output.sql" in the snapshot directory
 // This is a temporary file and will be removed after the snapshot is created
 func (s *Snapshotter) dbSnapshot(ctx context.Context, height uint64, format uint32, snapshotID string) error {
-	snaoshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
-	dumpFile := filepath.Join(snaoshotDir, stage1output)
+	snapshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
+	dumpFile := filepath.Join(snapshotDir, stage1output)
 
 	pgDumpCmd := exec.CommandContext(ctx,
 		"pg_dump",
