@@ -310,7 +310,12 @@ func (c *closeFuncs) closeAll() error {
 }
 
 func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *snapshots.SnapshotStore) *txapp.TxApp {
-	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, snapshotter, d.genesisCfg.ChainID,
+	var sh txapp.Snapshotter
+	if snapshotter != nil {
+		sh = snapshotter
+	}
+
+	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, sh, d.genesisCfg.ChainID,
 		!d.genesisCfg.ConsensusParams.WithoutGasCosts, d.cfg.AppCfg.Extensions, *d.log.Named("tx-router"))
 	if err != nil {
 		failBuild(err, "failed to build new TxApp")
@@ -465,7 +470,10 @@ func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 		RecurringHeight: cfg.Snapshots.RecurringHeight,
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
 	}
-	ss, err := snapshots.NewSnapshotStore(snapshotCfg, dbCfg, *d.log.Named("snapshotStore"))
+
+	snapshotter := snapshots.NewSnapshotter(dbCfg, cfg.Snapshots.SnapshotDir, *d.log.Named("snapshotter"))
+
+	ss, err := snapshots.NewSnapshotStore(snapshotCfg, snapshotter, *d.log.Named("snapshotStore"))
 	if err != nil {
 		failBuild(err, "failed to build snapshot store")
 	}

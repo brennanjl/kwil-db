@@ -63,14 +63,17 @@ type SnapshotStore struct {
 	snapshotsMtx    sync.RWMutex         // Protects access to snapshots and snapshotHeights
 
 	// Snapshotter
-	snapshotter *Snapshotter
+	snapshotter DBSnapshotter
 
 	// Logger
 	log log.Logger
 }
 
-func NewSnapshotStore(cfg *SnapshotConfig, dbConfig *DBConfig, logger log.Logger) (*SnapshotStore, error) {
-	snapshotter := NewSnapshotter(dbConfig, cfg.SnapshotDir, logger)
+type DBSnapshotter interface {
+	CreateSnapshot(ctx context.Context, height uint64, snapshotID string) (*Snapshot, error)
+}
+
+func NewSnapshotStore(cfg *SnapshotConfig, snapshotter DBSnapshotter, logger log.Logger) (*SnapshotStore, error) {
 	ss := &SnapshotStore{
 		cfg:             cfg,
 		snapshots:       make(map[uint64]*Snapshot),
