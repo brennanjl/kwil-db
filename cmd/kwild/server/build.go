@@ -35,6 +35,7 @@ import (
 	kwilgrpc "github.com/kwilteam/kwil-db/internal/services/grpc_server"
 	healthcheck "github.com/kwilteam/kwil-db/internal/services/health"
 	simple_checker "github.com/kwilteam/kwil-db/internal/services/health/simple-checker"
+	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/sql/pg"
 	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
@@ -178,7 +179,7 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 
 	// these are dummies, but they might need init in the future.
 	snapshotter := buildSnapshotter(d)
-	statesyncer := buildStatesyncer(d)
+	statesyncer := buildStatesyncer(d, snapshotter)
 
 	// this is a hack
 	// we need the cometbft client to broadcast txs.
@@ -308,7 +309,7 @@ func (c *closeFuncs) closeAll() error {
 	return err
 }
 
-func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *statesync.SnapshotStore) *txapp.TxApp {
+func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *snapshots.SnapshotStore) *txapp.TxApp {
 	txApp, err := txapp.NewTxApp(db, engine, buildSigner(d), ev, snapshotter, d.genesisCfg.ChainID,
 		!d.genesisCfg.ConsensusParams.WithoutGasCosts, d.cfg.AppCfg.Extensions, *d.log.Named("tx-router"))
 	if err != nil {
@@ -317,7 +318,7 @@ func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext,
 	return txApp
 }
 
-func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *statesync.SnapshotStore, statesyncer *statesync.StateSyncer) *abci.AbciApp {
+func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.SnapshotStore, statesyncer *statesync.StateSyncer) *abci.AbciApp {
 	var sh abci.SnapshotModule
 	if snapshotter != nil {
 		sh = snapshotter
@@ -446,34 +447,39 @@ func initAccountRepository(d *coreDependencies, tx sql.Tx) {
 	}
 }
 
-func buildSnapshotter(d *coreDependencies) *statesync.SnapshotStore {
+func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 	cfg := d.cfg.AppCfg
 	if !cfg.Snapshots.Enabled {
 		return nil
 	}
 
-	dbCfg := statesync.DBConfig{
+	dbCfg := &snapshots.DBConfig{
 		DBUser: cfg.DBUser,
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,
 		DBPort: cfg.DBPort,
 	}
-	snapshotCfg := &statesync.SnapshotConfig{
+
+	snapshotCfg := &snapshots.SnapshotConfig{
 		SnapshotDir:     cfg.Snapshots.SnapshotDir,
 		RecurringHeight: cfg.Snapshots.RecurringHeight,
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
-		DbConfig:        dbCfg,
 	}
-	ss, err := statesync.NewSnapshotStore(snapshotCfg, *d.log.Named("snapshotStore"))
+	ss, err := snapshots.NewSnapshotStore(snapshotCfg, dbCfg, *d.log.Named("snapshotStore"))
 	if err != nil {
 		failBuild(err, "failed to build snapshot store")
 	}
 	return ss
 }
 
-func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
+func buildStatesyncer(d *coreDependencies, snapshotter *snapshots.SnapshotStore) *statesync.StateSyncer {
+	if !d.cfg.ChainCfg.StateSync.Enable {
+		return nil
+	}
+
 	cfg := d.cfg.AppCfg
-	dbCfg := statesync.DBConfig{
+
+	dbCfg := &snapshots.DBConfig{
 		DBUser: cfg.DBUser,
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,
@@ -481,7 +487,9 @@ func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
 	}
 
 	// create state syncer
-	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir, d.genesisCfg.ChainID, d.cfg.ChainCfg.StateSync.RPCServers, *d.log.Named("stateSyncer"))
+	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir,
+		d.cfg.ChainCfg.StateSync.RPCServers,
+		snapshotter, *d.log.Named("stateSyncer"))
 }
 
 func fileExists(name string) bool {

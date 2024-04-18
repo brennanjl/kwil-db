@@ -13,42 +13,54 @@ import (
 	"strings"
 
 	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/kwilteam/kwil-db/internal/snapshots"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"go.uber.org/zap"
 )
 
+const (
+	ABCISnapshotQueryPath = "/snapshot/height"
+)
+
+type SnapshotStore interface {
+	RegisterSnapshot(snapshot *snapshots.Snapshot) error
+}
+
 type StateSyncer struct {
-	dbConfig DBConfig
-	// TODO: Statesync should reference snapshotter, so that it can register the snapshot with which it bootstrapped.
+	// statesync configuration
+	dbConfig *snapshots.DBConfig
 
-	inProgress   bool
+	// directory to store snapshots and chunks
+	// same as the snapshot store directory
+	// as we allow to reuse the received snapshots
 	snapshotsDir string
-	rpcServers   []string
-	snapshot     *Snapshot
-	// Chunks received till now
-	chunks     map[uint32]bool
-	rcvdChunks uint32
 
-	snapshotProviders []*rpchttp.HTTP // cometbft rpc servers
+	// trusted snapshot providers for verification - cometbft rfc servers
+	snapshotProviders []*rpchttp.HTTP
 
+	// State syncer state
+	inProgress bool
+	snapshot   *snapshots.Snapshot
+	chunks     map[uint32]bool // Chunks received till now
+	rcvdChunks uint32          // Number of chunks received till now
+
+	// snapshotStore
+	snapshotStore SnapshotStore
 	// Logger
 	log log.Logger
 }
 
-// Do we always expect the chunks to be received in order?
-func NewStateSyncer(ctx context.Context, cfg DBConfig, dir string, chainID string, providers []string, logger log.Logger) *StateSyncer {
+func NewStateSyncer(ctx context.Context, cfg *snapshots.DBConfig, snapshotDir string, providers []string, snapshotStore SnapshotStore, logger log.Logger) *StateSyncer {
 
 	ss := &StateSyncer{
-		dbConfig:     cfg,
-		snapshotsDir: dir,
-		inProgress:   false,
-		rcvdChunks:   0,
-		log:          logger,
-		rpcServers:   providers,
+		dbConfig:      cfg,
+		snapshotsDir:  snapshotDir,
+		snapshotStore: snapshotStore,
+		log:           logger,
 	}
 
-	for _, s := range ss.rpcServers {
+	for _, s := range providers {
 		clt, err := rpcClient(s)
 		if err != nil {
 			logger.Error("Failed to create rpc client", zap.String("server", s), zap.Error(err))
@@ -60,19 +72,9 @@ func NewStateSyncer(ctx context.Context, cfg DBConfig, dir string, chainID strin
 	return ss
 }
 
-// rpcClient sets up a new RPC client
-func rpcClient(server string) (*rpchttp.HTTP, error) {
-	if !strings.Contains(server, "://") {
-		server = "http://" + server
-	}
-	c, err := rpchttp.New(server, "/websocket")
-	if err != nil {
-		return nil, err
-	}
-	return c, nil
-}
-
-func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
+// OfferSnapshot checks if the snapshot is valid and kicks off the state sync process
+// accepted snapshot is stored on disk for later processing
+func (ss *StateSyncer) OfferSnapshot(snapshot *snapshots.Snapshot) error {
 	ss.log.Info("Offering snapshot", zap.Int64("height", int64(snapshot.Height)), zap.Uint32("format", snapshot.Format), zap.String("App Hash", fmt.Sprintf("%x", snapshot.SnapshotHash)))
 
 	// Check if we are already in the middle of a snapshot
@@ -80,8 +82,8 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
 		return ErrStateSyncInProgress
 	}
 
-	// Validate the snapshot header
-	err := ss.validateSnapshotHeader(*snapshot)
+	// Validate the snapshot
+	err := ss.validateSnapshot(*snapshot)
 	if err != nil {
 		return err
 	}
@@ -91,7 +93,7 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
 	ss.chunks = make(map[uint32]bool, snapshot.ChunkCount)
 	ss.rcvdChunks = 0
 
-	dir := snapshotChunkDir(ss.snapshotsDir, snapshot.Height, snapshot.Format)
+	dir := snapshots.SnapshotChunkDir(ss.snapshotsDir, snapshot.Height, snapshot.Format)
 	err = os.MkdirAll(dir, 0755)
 	if err != nil {
 		ss.resetStateSync()
@@ -99,7 +101,7 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
 	}
 
 	// store snapshot header on disk
-	headerFile := snapshotHeaderFile(ss.snapshotsDir, snapshot.Height, snapshot.Format)
+	headerFile := snapshots.SnapshotHeaderFile(ss.snapshotsDir, snapshot.Height, snapshot.Format)
 	err = snapshot.SaveAs(headerFile)
 	if err != nil {
 		ss.resetStateSync()
@@ -109,16 +111,20 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
 	return nil
 }
 
+// ApplySnapshotChunk accepts a chunk and stores it on disk for later processing if valid
+// If all chunks are received, it starts the process of restoring the database
 func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, error) {
 	if !ss.inProgress {
 		return false, ErrStateSyncNotInProgress
 	}
 
+	// Check if the chunk has already been applied
 	applied, ok := ss.chunks[index]
 	if ok && applied {
 		return false, nil
 	}
 
+	// Check if the chunk index is valid
 	if index >= ss.snapshot.ChunkCount {
 		ss.log.Error("Invalid chunk index", zap.Uint32("index", index), zap.Uint32("chunkCount", ss.snapshot.ChunkCount))
 		return false, ErrRejectSnapshotChunk
@@ -128,13 +134,12 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	hash := sha256.New()
 	hash.Write(chunk)
 	chunkHash := hash.Sum(nil)
-
 	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index]) {
 		return true, ErrRejectSnapshotChunk
 	}
 
 	// store the chunk on disk
-	chunkFileName := snapshotChunkFile(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format, index)
+	chunkFileName := snapshots.SnapshotChunkFile(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format, index)
 	chunkFile, err := os.Create(chunkFileName)
 	if err != nil {
 		return false, ErrRetrySnapshotChunk
@@ -143,17 +148,18 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 
 	_, err = chunkFile.Write(chunk)
 	if err != nil {
+		os.Remove(chunkFileName)
 		return false, ErrRetrySnapshotChunk
 	}
 
-	ss.log.Info("Applied chunk", zap.Uint32("index", index))
+	ss.log.Info("Applied snapshot chunk", zap.Uint64("height", ss.snapshot.Height), zap.Uint32("index", index))
 
 	ss.chunks[index] = true
 	ss.rcvdChunks += 1
 
-	// Check if all chunks have been received
+	// Kick off the process of restoring the database if all chunks are received
 	if ss.rcvdChunks == ss.snapshot.ChunkCount {
-		ss.log.Info("All chunks received")
+		ss.log.Info("All chunks received - Starting DB restore process")
 		// Restore the DB from the chunks
 		err := ss.restoreDB(ctx)
 		if err != nil {
@@ -161,21 +167,32 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 			return false, ErrRejectSnapshot
 		}
 		ss.log.Info("DB restored")
+
 		ss.inProgress = false
-		ss.snapshot = nil
 		ss.chunks = nil
 		ss.rcvdChunks = 0
+
+		// Register the snapshot with the snapshot store for future use
+		err = ss.snapshotStore.RegisterSnapshot(ss.snapshot)
+		if err != nil {
+			ss.snapshot = nil
+			return false, nil // fail silently? as its okay to not register this snapshot
+		}
+
+		ss.snapshot = nil
 	}
 
 	return false, nil
 }
 
+// restoreDB restores the database from the logical sql dump
+// This decompresses the chunks and streams the decompressed sql dump
+// to psql command for restoring the database
 func (ss *StateSyncer) restoreDB(ctx context.Context) error {
-	// Unzip the chunks and restore the db
-	// Restore the db from the sql dump
+	// unzip and stream the sql dump to psql
 	cmd := exec.CommandContext(ctx, "psql", "-U", "kwild", "-h", "localhost", "-p", "5435", "-d", "kwild")
 
-	stdinPipe, err := cmd.StdinPipe()
+	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
 	if err != nil {
 		return err
 	}
@@ -184,11 +201,12 @@ func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 		return err
 	}
 
+	// decompress the chunk streams and stream the sql dump to psql stdinPipe
 	if err := ss.decompressAndValidateChunkStreams(stdinPipe); err != nil {
 		return err
 	}
 
-	stdinPipe.Close() // signals the end of the input
+	stdinPipe.Close() // end of the input
 
 	if err := cmd.Wait(); err != nil {
 		return err
@@ -196,8 +214,9 @@ func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	return nil
 }
 
+// decompressAndValidateChunkStreams decompresses the chunk streams and validates the snapshot hash
 func (ss *StateSyncer) decompressAndValidateChunkStreams(output io.Writer) error {
-	chunksDir := snapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
+	chunksDir := snapshots.SnapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
 	streamer := NewStreamer(ss.snapshot.ChunkCount, chunksDir, ss.log)
 	defer streamer.Close()
 
@@ -212,7 +231,7 @@ func (ss *StateSyncer) decompressAndValidateChunkStreams(output io.Writer) error
 	if err != nil {
 		return fmt.Errorf("failed to decompress chunk streams: %w", err)
 	}
-	ss.log.Info("Decompressed chunk streams", zap.Int64("bytes compressed", n))
+	ss.log.Debug("Decompressed chunk streams", zap.Int64("bytes compressed", n))
 	hash := hasher.Sum(nil)
 
 	// Validate the hash of the decompressed chunks
@@ -222,23 +241,15 @@ func (ss *StateSyncer) decompressAndValidateChunkStreams(output io.Writer) error
 	return nil
 }
 
-func (ss *StateSyncer) validateSnapshotHeader(snapshot Snapshot) error {
-	// Check if the snapshot format is valid
-	if snapshot.Format != 0 {
+// validateSnapshot validates the snapshot against the trusted snapshot providers
+func (ss *StateSyncer) validateSnapshot(snapshot snapshots.Snapshot) error {
+	// Check if the snapshot's contents are valid
+	if snapshot.Format != snapshots.DefaultSnapshotFormat {
 		return ErrUnsupportedSnapshotFormat
 	}
 
-	// Check if the snapshot height is valid
-	if snapshot.Height <= 0 {
-		return ErrInvalidSnapshot
-	}
-
-	// Check if the snapshot chunk count is valid
-	if snapshot.ChunkCount <= 0 {
-		return ErrInvalidSnapshot
-	}
-
-	if snapshot.ChunkCount != uint32(len(snapshot.ChunkHashes)) {
+	if snapshot.Height <= 0 || snapshot.ChunkCount <= 0 ||
+		snapshot.ChunkCount != uint32(len(snapshot.ChunkHashes)) {
 		return ErrInvalidSnapshot
 	}
 
@@ -246,14 +257,14 @@ func (ss *StateSyncer) validateSnapshotHeader(snapshot Snapshot) error {
 	height := fmt.Sprintf("%d", snapshot.Height)
 	verified := false
 	for _, clt := range ss.snapshotProviders {
-		res, err := clt.ABCIQuery(context.Background(), "/snapshot/height", []byte(height))
+		res, err := clt.ABCIQuery(context.Background(), ABCISnapshotQueryPath, []byte(height))
 		if err != nil {
-			ss.log.Error("Failed to query snapshot", zap.Error(err))
+			ss.log.Info("Failed to query snapshot", zap.Error(err)) // failover to next provider
 			continue
 		}
 
 		if res.Response.Value != nil {
-			var snap Snapshot
+			var snap snapshots.Snapshot
 			err = json.Unmarshal(res.Response.Value, &snap)
 			if err != nil {
 				ss.log.Error("Failed to unmarshal snapshot", zap.Error(err))
@@ -262,7 +273,7 @@ func (ss *StateSyncer) validateSnapshotHeader(snapshot Snapshot) error {
 
 			if snap.Height != snapshot.Height || snap.SnapshotSize != snapshot.SnapshotSize ||
 				snap.ChunkCount != snapshot.ChunkCount || !bytes.Equal(snap.SnapshotHash, snapshot.SnapshotHash) {
-				ss.log.Error("Invalid snapshot", zap.Uint64("height", snapshot.Height))
+				ss.log.Error("Invalid snapshot", zap.Uint64("height", snapshot.Height), zap.Any("Expected ", snap), zap.Any("Actual", snapshot))
 				break
 			}
 
@@ -279,11 +290,23 @@ func (ss *StateSyncer) validateSnapshotHeader(snapshot Snapshot) error {
 }
 
 func (ss *StateSyncer) resetStateSync() {
-	ssDir := snapshotHeightDir(ss.snapshotsDir, ss.snapshot.Height)
+	ssDir := snapshots.SnapshotHeightDir(ss.snapshotsDir, ss.snapshot.Height)
 	os.RemoveAll(ssDir)
 
 	ss.inProgress = false
 	ss.snapshot = nil
 	ss.chunks = nil
 	ss.rcvdChunks = 0
+}
+
+// rpcClient sets up a new RPC client
+func rpcClient(server string) (*rpchttp.HTTP, error) {
+	if !strings.Contains(server, "://") {
+		server = "http://" + server
+	}
+	c, err := rpchttp.New(server, "/websocket")
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }

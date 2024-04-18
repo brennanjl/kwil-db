@@ -210,22 +210,29 @@ func (r *TxApp) ChainInfo(ctx context.Context) (int64, []byte, error) {
 
 // ReloadDB reloads the database state into the engine.
 func (r *TxApp) ReloadDB(ctx context.Context) error {
-	if r.height == 0 && r.appHash == nil {
-		// Replay using StateSync (GenesisInit is not called)
+	tx, err := r.Database.BeginReadTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-		tx, err := r.Database.BeginReadTx(ctx)
-		if err != nil {
-			return err
-		}
+	// Check if we are switching from StateSync?
+	// If so, we need to reload the engine.
+	height, app_hash, err := getChainState(ctx, tx)
+	if err != nil {
+		return err
+	}
 
+	if r.height == 0 && height > r.height && r.appHash == nil {
 		err = r.Engine.Reload(ctx, tx)
 		if err != nil {
 			return err
 		}
-
-		return tx.Commit(ctx)
+		r.height = height
+		r.appHash = app_hash
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // UpdateValidator updates a validator's power.
@@ -392,14 +399,6 @@ func (r *TxApp) Finalize(ctx context.Context, blockHeight int64) (appHash []byte
 	}()
 
 	r.log.Debug("Finalize(start)", log.Int("height", r.height), log.String("appHash", hex.EncodeToString(r.appHash)))
-
-	if r.height == 0 && r.appHash == nil {
-		// Replay using StateSync (GenesisInit is not called)
-		r.height, r.appHash, err = getChainState(ctx, r.currentTx)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
 
 	if blockHeight != r.height+1 {
 		return nil, nil, fmt.Errorf("Finalize was expecting height %d, got %d", r.height+1, blockHeight)

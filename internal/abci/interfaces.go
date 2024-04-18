@@ -11,14 +11,14 @@ import (
 	// packages that provide the concrete implementations. This is a bit
 	// backwards, but it at least allows us to stub out for testing.
 
-	"github.com/kwilteam/kwil-db/internal/statesync"
+	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 )
 
 // SnapshotModule is an interface for a struct that implements snapshotting
 type SnapshotModule interface {
 	// Lists all the available snapshots in the snapshotstore and returns the snapshot metadata
-	ListSnapshots() []*statesync.Snapshot
+	ListSnapshots() []*snapshots.Snapshot
 
 	// Returns the snapshot chunk of index chunkId at a given height
 	LoadSnapshotChunk(height uint64, format uint32, chunkID uint32) ([]byte, error)
@@ -27,7 +27,7 @@ type SnapshotModule interface {
 // DBBootstrapModule is an interface for a struct that implements bootstrapping
 type StateSyncModule interface {
 	// Offers a snapshot (metadata) to the bootstrapper and decides whether to accept the snapshot or not
-	OfferSnapshot(snapshot *statesync.Snapshot) error
+	OfferSnapshot(snapshot *snapshots.Snapshot) error
 
 	// Offers a snapshot Chunk to the bootstrapper, once all the chunks corresponding to the snapshot are received, the databases are restored from the chunks
 	ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, error)

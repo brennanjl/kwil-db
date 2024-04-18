@@ -103,7 +103,7 @@ func newCometConfig(cfg *config.KwildConfig) *cmtCfg.Config {
 	nodeCfg.StateSync.DiscoveryTime = time.Duration(userChainCfg.StateSync.DiscoveryTime)
 	nodeCfg.StateSync.ChunkRequestTimeout = time.Duration(userChainCfg.StateSync.ChunkRequestTimeout)
 
-	// Light client verficiation
+	// Light client verification
 	nodeCfg.StateSync.TrustHash = userChainCfg.StateSync.TrustHash
 	nodeCfg.StateSync.TrustHeight = userChainCfg.StateSync.TrustHeight
 	nodeCfg.StateSync.TrustPeriod = time.Duration(userChainCfg.StateSync.TrustPeriod)

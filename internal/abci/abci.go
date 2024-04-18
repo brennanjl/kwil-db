@@ -15,6 +15,7 @@ import (
 	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/core/types/transactions"
 	"github.com/kwilteam/kwil-db/internal/ident"
+	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 
@@ -547,7 +548,7 @@ func (a *AbciApp) LoadSnapshotChunk(ctx context.Context, req *abciTypes.RequestL
 // OfferSnapshot is on the state sync connection
 func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOfferSnapshot) (*abciTypes.ResponseOfferSnapshot, error) {
 	// snapshot := convertABCISnapshots(req.Snapshot)
-	var snapshot statesync.Snapshot
+	var snapshot snapshots.Snapshot
 	err := json.Unmarshal(req.Snapshot.Metadata, &snapshot)
 	if err != nil {
 		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, err
@@ -896,15 +897,17 @@ func (a *AbciApp) ProcessProposal(ctx context.Context, req *abciTypes.RequestPro
 }
 
 func (a *AbciApp) Query(ctx context.Context, req *abciTypes.RequestQuery) (*abciTypes.ResponseQuery, error) {
-	if req.Path == "/snapshot/height" {
+	if req.Path == statesync.ABCISnapshotQueryPath { // "/snapshot/height"
 		if a.snapshotter == nil {
 			return &abciTypes.ResponseQuery{}, nil
 		}
+
+		var snapshot *snapshots.Snapshot
 		height := string(req.Data)
-		snapshots := a.snapshotter.ListSnapshots()
 		exists := false
-		var snapshot *statesync.Snapshot
-		for _, s := range snapshots {
+
+		curSnapshots := a.snapshotter.ListSnapshots()
+		for _, s := range curSnapshots {
 			if height == fmt.Sprintf("%d", s.Height) {
 				exists = true
 				snapshot = s
