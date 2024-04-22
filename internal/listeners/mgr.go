@@ -78,7 +78,6 @@ func (omgr *ListenerManager) Start() (err error) {
 
 			for name, start := range listeners.RegisteredListeners() {
 				go func(start listeners.ListenFunc, name string) {
-					defer cancel2() // stop others, like an error group
 					err := start(ctx2, &common.Service{
 						Logger:           omgr.logger.Named(name).Sugar(),
 						ExtensionConfigs: omgr.config,
@@ -94,7 +93,9 @@ func (omgr *ListenerManager) Start() (err error) {
 						if !errors.Is(err, context.Canceled) {
 							errChan <- err
 						}
+						cancel2() // Stop other listeners
 					} else {
+						// Listener exited with nil, no need to stop other listeners in this case
 						omgr.logger.Debug("Event listener stopped (cleanly)", zap.String("listener", name))
 					}
 				}(start, name)
