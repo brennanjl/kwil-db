@@ -190,12 +190,14 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 // to psql command for restoring the database
 func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	// unzip and stream the sql dump to psql
-	cmd := exec.CommandContext(ctx, "psql", "-U", "kwild", "-h", "localhost", "-p", "5435", "-d", "kwild")
+	cmd := exec.CommandContext(ctx, "psql", "-U", ss.dbConfig.DBUser, "-h", ss.dbConfig.DBHost, "-p", ss.dbConfig.DBPort, "-d", "kwild") // "kwild" -> database
 
 	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
 	if err != nil {
 		return err
 	}
+
+	ss.log.Info("Starting psql command", zap.String("command", cmd.String()))
 
 	if err := cmd.Start(); err != nil {
 		return err

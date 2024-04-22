@@ -280,7 +280,7 @@ cache_size = {{ .ChainCfg.Mempool.CacheSize }}
 #######################################################
 ###         State Sync Configuration Options        ###
 #######################################################
-[statesync]
+[chain.statesync]
 # State sync rapidly bootstraps a new node by discovering, fetching, and restoring a state machine
 # snapshot from peers instead of fetching and replaying historical blocks. Requires some peers in
 # the network to take and serve state machine snapshots. State sync is not attempted if the node

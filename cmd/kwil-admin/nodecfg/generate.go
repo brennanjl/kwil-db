@@ -537,14 +537,22 @@ func uniqueAdminAddress(cfg *config.KwildConfig) error {
 // incrementPort increments the port in the URL by the given amount.
 // if the url is a UNIX socket, it will append the amount to the path.
 func incrementPort(incoming string, amt int) (string, error) {
-	res, err := coreUrl.ParseURL(incoming)
+	schemaExists, err := coreUrl.HasScheme(incoming)
+	if err != nil {
+		return "", err
+	}
+
+	if !schemaExists {
+		incoming = "tcp://" + incoming
+	}
+
+	res, err := url.Parse(incoming)
 	if err != nil {
 		return "", err
 	}
 
 	// Split the URL into two parts: host (and possibly scheme) and port
-	// host, portStr, err := net.SplitHostPort(res.Host)
-	host, portStr, err := net.SplitHostPort(res.Target)
+	host, portStr, err := net.SplitHostPort(res.Host)
 	if err != nil {
 		// err will occur if there is no scheme, complaining (incorrectly) that
 		// there is no port. If res.Opaque is not empty, then
@@ -567,8 +575,8 @@ func incrementPort(incoming string, amt int) (string, error) {
 	// Reconstruct and return the new URL
 	newUrl := net.JoinHostPort(host, strconv.Itoa(port))
 
-	if res.Scheme != "localhost" {
-		newUrl = res.Scheme.String() + "://" + newUrl
+	if schemaExists {
+		newUrl = res.Scheme + "://" + newUrl
 	}
 
 	return newUrl, nil

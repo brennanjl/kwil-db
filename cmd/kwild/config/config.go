@@ -495,6 +495,12 @@ func DefaultConfig() *KwildConfig {
 			DBUser:             "kwild",
 			DBName:             "kwild",
 			Extensions:         make(map[string]map[string]string),
+			Snapshots: SnapshotConfig{
+				Enabled:         false,
+				RecurringHeight: 10000,
+				MaxSnapshots:    3,
+				SnapshotDir:     "snapshots",
+			},
 		},
 		Logging: &Logging{
 			Level:        "info",
@@ -502,6 +508,7 @@ func DefaultConfig() *KwildConfig {
 			TimeEncoding: log.TimeEncodingEpochFloat,
 			OutputPaths:  []string{"stdout"},
 		},
+
 		ChainCfg: &ChainConfig{
 			P2P: &P2PConfig{
 				ListenAddress:       "tcp://0.0.0.0:26656",
