@@ -166,11 +166,10 @@ type ConsensusConfig struct {
 }
 
 type StateSyncConfig struct {
-	Enable               bool     `mapstructure:"enable"`
-	ReceivedSnapshotsDir string   `mapstructure:"temp_dir"`
-	RPCServers           []string `mapstructure:"rpc_servers"`
-	DiscoveryTime        Duration `mapstructure:"discovery_time"`
-	ChunkRequestTimeout  Duration `mapstructure:"chunk_request_timeout"`
+	Enable              bool     `mapstructure:"enable"`
+	RPCServers          string   `mapstructure:"rpc_servers"`
+	DiscoveryTime       Duration `mapstructure:"discovery_time"`
+	ChunkRequestTimeout Duration `mapstructure:"chunk_request_timeout"`
 
 	// Light client verification options
 	TrustHeight int64    `mapstructure:"trust_height"`
@@ -552,7 +551,7 @@ func EmptyConfig() *KwildConfig {
 			RPC:     &ChainRPCConfig{},
 			Mempool: &MempoolConfig{},
 			StateSync: &StateSyncConfig{
-				RPCServers: []string{},
+				RPCServers: "",
 			},
 			Consensus: &ConsensusConfig{},
 		},

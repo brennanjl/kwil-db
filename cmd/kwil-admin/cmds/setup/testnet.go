@@ -38,8 +38,9 @@ func testnetCmd() *cobra.Command {
 	var blockInterval time.Duration
 	var joinExpiry int64
 	var validatorAmount, nonValidatorAmount, p2pPort int
-	var withoutNonces, withGas bool
+	var withoutNonces, withGas, snapshotsEnabled bool
 	var allocs AllocsFlag
+	var snapshotHeights, maxSnapshots uint64
 
 	cmd := &cobra.Command{
 		Use:     "testnet",
@@ -65,6 +66,9 @@ func testnetCmd() *cobra.Command {
 				WithoutGasCosts:         !withGas,
 				WithoutNonces:           withoutNonces,
 				Allocs:                  allocs.M,
+				SnapshotsEnabled:        snapshotsEnabled,
+				MaxSnapshots:            maxSnapshots,
+				SnapshotHeights:         snapshotHeights,
 			}, &nodecfg.ConfigOpts{
 				UniquePorts: true,
 			})
@@ -92,5 +96,8 @@ func testnetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&withoutNonces, "without-nonces", false, "disable account nonces")
 	cmd.Flags().BoolVar(&withGas, "gas", false, "enable gas")
 	cmd.Flags().Var(&allocs, "alloc", "account=amount pairs of genesis account allocations")
+	cmd.Flags().BoolVar(&snapshotsEnabled, "snapshots.enable", false, "enables db snapshots")
+	cmd.Flags().Uint64Var(&maxSnapshots, "snapshots.max-snapshots", 3, "Maximum number of snapshots to store in the device")
+	cmd.Flags().Uint64Var(&snapshotHeights, "snapshots.heights", 10000, "Heights to snapshot the db")
 	return cmd
 }

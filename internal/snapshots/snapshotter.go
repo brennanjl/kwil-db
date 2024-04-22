@@ -323,7 +323,10 @@ func (s *Snapshotter) compressDump(height uint64, format uint32) error {
 	defer outputFile.Close()
 
 	// gzip writer
-	// TODO: Should we use gzip.NewWriterLevel() to set the compression level?
+	// Do we need faster compression at the expense of larger file size?
+	// [gzip.BestSpeed or gzip.HuffmanOnly]
+	// or slower compression for smaller file size? [gzip.BestCompression]
+	// or a balance between the two? [gzip.DefaultCompression]
 	gzipWriter := gzip.NewWriter(outputFile)
 	defer gzipWriter.Close()
 

@@ -44,12 +44,7 @@ func resetCmd() *cobra.Command {
 				return display.PrintErr(cmd, err)
 			}
 
-			expandedSnap, err := expandPath(snapPath)
-			if err != nil {
-				return display.PrintErr(cmd, err)
-			}
-
-			err = config.ResetAll(expandedRoot, expandedSnap)
+			err = config.ResetAll(expandedRoot, snapPath)
 			if err != nil {
 				return display.PrintErr(cmd, err)
 			}

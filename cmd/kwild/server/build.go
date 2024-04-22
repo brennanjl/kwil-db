@@ -494,10 +494,10 @@ func buildStatesyncer(d *coreDependencies, snapshotter *snapshots.SnapshotStore)
 		DBPort: cfg.DBPort,
 	}
 
+	providers := strings.Split(d.cfg.ChainCfg.StateSync.RPCServers, ",")
 	// create state syncer
 	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir,
-		d.cfg.ChainCfg.StateSync.RPCServers,
-		snapshotter, *d.log.Named("stateSyncer"))
+		providers, snapshotter, *d.log.Named("stateSyncer"))
 }
 
 func fileExists(name string) bool {

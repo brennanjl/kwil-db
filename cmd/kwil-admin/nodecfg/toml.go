@@ -149,6 +149,22 @@ hostname = "{{ .AppCfg.Hostname }}"
 {{- end }}
 {{- end }}
 
+#######################################################################
+###                     Snapshots Configuration                     ###
+#######################################################################
+[app.snapshots]
+
+# Enables snapshots
+enabled = {{.AppCfg.Snapshots.Enabled}}
+
+# Path to the snapshots directory
+snapshot_dir = "{{.AppCfg.Snapshots.SnapshotDir}}"
+
+# Heights at which the database is snapshotted.
+snapshot_heights = {{.AppCfg.Snapshots.RecurringHeight}}
+
+# Maximum number of snapshots to store
+max_snapshots = {{.AppCfg.Snapshots.MaxSnapshots}}
 
 #######################################################################
 ###                 Chain  Main Base Config Options                 ###
@@ -260,4 +276,33 @@ max_tx_bytes = {{ .ChainCfg.Mempool.MaxTxBytes }}
 
 # Size of the cache (used to filter transactions we saw earlier) in transactions
 cache_size = {{ .ChainCfg.Mempool.CacheSize }}
+
+#######################################################
+###         State Sync Configuration Options        ###
+#######################################################
+[statesync]
+# State sync rapidly bootstraps a new node by discovering, fetching, and restoring a state machine
+# snapshot from peers instead of fetching and replaying historical blocks. Requires some peers in
+# the network to take and serve state machine snapshots. State sync is not attempted if the node
+# has any local state (LastBlockHeight > 0). The node will have a truncated block history,
+# starting from the height of the snapshot.
+enable = {{ .ChainCfg.StateSync.Enable }}
+
+# Trusted snapshot providers (comma-separated) are the source-of-truth for the snapshot integrity.
+# Snapshots are accepted for statesync only after verifying it with these trusted snapshot providers.
+# These are also used for light client verification of the synced state machine and
+# retrieval of state data for node bootstrapping.
+# Light client verification needs a trusted height and corresponding block hash obtained from a
+# trusted source, and a period during which validators can be trusted.
+rpc_servers = "{{ .ChainCfg.StateSync.RPCServers }}"
+trust_height = {{ .ChainCfg.StateSync.TrustHeight }}
+trust_hash = "{{ .ChainCfg.StateSync.TrustHash }}"
+trust_period = "{{ .ChainCfg.StateSync.TrustPeriod }}"
+
+# Time to spend discovering snapshots before initiating a restore.
+discovery_time = "{{ .ChainCfg.StateSync.DiscoveryTime }}"
+
+# The timeout duration before re-requesting a chunk, possibly from a different
+# peer (default: 1 minute).
+chunk_request_timeout = "{{ .ChainCfg.StateSync.ChunkRequestTimeout }}"
 `

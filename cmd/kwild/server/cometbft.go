@@ -5,6 +5,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kwilteam/kwil-db/cmd/kwild/config"
@@ -98,8 +99,7 @@ func newCometConfig(cfg *config.KwildConfig) *cmtCfg.Config {
 	nodeCfg.Consensus.TimeoutCommit = time.Duration(userChainCfg.Consensus.TimeoutCommit)
 
 	nodeCfg.StateSync.Enable = userChainCfg.StateSync.Enable
-	// nodeCfg.StateSync.TempDir = userChainCfg.StateSync.ReceivedSnapshotsDir
-	nodeCfg.StateSync.RPCServers = userChainCfg.StateSync.RPCServers
+	nodeCfg.StateSync.RPCServers = strings.Split(userChainCfg.StateSync.RPCServers, ",")
 	nodeCfg.StateSync.DiscoveryTime = time.Duration(userChainCfg.StateSync.DiscoveryTime)
 	nodeCfg.StateSync.ChunkRequestTimeout = time.Duration(userChainCfg.StateSync.ChunkRequestTimeout)
 
