@@ -44,6 +44,7 @@ type DBConfig struct {
 	DBPass string
 	DBHost string
 	DBPort string
+	DBName string
 }
 
 type SnapshotConfig struct {

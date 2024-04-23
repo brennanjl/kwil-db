@@ -113,21 +113,21 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *snapshots.Snapshot) error {
 
 // ApplySnapshotChunk accepts a chunk and stores it on disk for later processing if valid
 // If all chunks are received, it starts the process of restoring the database
-func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, error) {
+func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, bool, error) {
 	if !ss.inProgress {
-		return false, ErrStateSyncNotInProgress
+		return false, false, ErrStateSyncNotInProgress
 	}
 
 	// Check if the chunk has already been applied
 	applied, ok := ss.chunks[index]
 	if ok && applied {
-		return false, nil
+		return false, false, nil
 	}
 
 	// Check if the chunk index is valid
 	if index >= ss.snapshot.ChunkCount {
 		ss.log.Error("Invalid chunk index", zap.Uint32("index", index), zap.Uint32("chunkCount", ss.snapshot.ChunkCount))
-		return false, ErrRejectSnapshotChunk
+		return false, false, ErrRejectSnapshotChunk
 	}
 
 	// Validate the chunk hash
@@ -135,21 +135,21 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	hash.Write(chunk)
 	chunkHash := hash.Sum(nil)
 	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index]) {
-		return true, ErrRejectSnapshotChunk
+		return false, true, ErrRejectSnapshotChunk
 	}
 
 	// store the chunk on disk
 	chunkFileName := snapshots.SnapshotChunkFile(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format, index)
 	chunkFile, err := os.Create(chunkFileName)
 	if err != nil {
-		return false, ErrRetrySnapshotChunk
+		return false, false, ErrRetrySnapshotChunk
 	}
 	defer chunkFile.Close()
 
 	_, err = chunkFile.Write(chunk)
 	if err != nil {
 		os.Remove(chunkFileName)
-		return false, ErrRetrySnapshotChunk
+		return false, false, ErrRetrySnapshotChunk
 	}
 
 	ss.log.Info("Applied snapshot chunk", zap.Uint64("height", ss.snapshot.Height), zap.Uint32("index", index))
@@ -164,7 +164,7 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 		err := ss.restoreDB(ctx)
 		if err != nil {
 			ss.resetStateSync()
-			return false, ErrRejectSnapshot
+			return false, false, ErrRejectSnapshot
 		}
 		ss.log.Info("DB restored")
 
@@ -176,13 +176,14 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 		err = ss.snapshotStore.RegisterSnapshot(ss.snapshot)
 		if err != nil {
 			ss.snapshot = nil
-			return false, nil // fail silently? as its okay to not register this snapshot
+			return false, false, nil // fail silently? as its okay to not register this snapshot
 		}
 
 		ss.snapshot = nil
+		return true, false, nil
 	}
 
-	return false, nil
+	return false, false, nil
 }
 
 // restoreDB restores the database from the logical sql dump
@@ -190,14 +191,14 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 // to psql command for restoring the database
 func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 	// unzip and stream the sql dump to psql
-	cmd := exec.CommandContext(ctx, "psql", "-U", ss.dbConfig.DBUser, "-h", ss.dbConfig.DBHost, "-p", ss.dbConfig.DBPort, "-d", "kwild") // "kwild" -> database
+	cmd := exec.CommandContext(ctx, "psql", "-U", ss.dbConfig.DBUser, "-h", ss.dbConfig.DBHost, "-p", ss.dbConfig.DBPort, "-d", ss.dbConfig.DBName)
 
 	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
 	if err != nil {
 		return err
 	}
 
-	ss.log.Info("Starting psql command", zap.String("command", cmd.String()))
+	ss.log.Info("Restore DB: ", zap.String("command", cmd.String()))
 
 	if err := cmd.Start(); err != nil {
 		return err

@@ -107,7 +107,7 @@ func (s *Snapshotter) dbSnapshot(ctx context.Context, height uint64, format uint
 	pgDumpCmd := exec.CommandContext(ctx,
 		"pg_dump",
 		// File format options
-		"--dbname", "kwild",
+		"--dbname", s.dbConfig.DBName,
 		"--file", dumpFile,
 		"--format", "plain",
 		// List of schemas to include in the dump

@@ -463,6 +463,7 @@ func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,
 		DBPort: cfg.DBPort,
+		DBName: cfg.DBName,
 	}
 
 	snapshotCfg := &snapshots.SnapshotConfig{
@@ -473,7 +474,7 @@ func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 
 	snapshotter := snapshots.NewSnapshotter(dbCfg, cfg.Snapshots.SnapshotDir, *d.log.Named("snapshotter"))
 
-	ss, err := snapshots.NewSnapshotStore(snapshotCfg, snapshotter, *d.log.Named("snapshotStore"))
+	ss, err := snapshots.NewSnapshotStore(snapshotCfg, snapshotter, *d.log.Named("snapshot-store"))
 	if err != nil {
 		failBuild(err, "failed to build snapshot store")
 	}
@@ -492,12 +493,13 @@ func buildStatesyncer(d *coreDependencies, snapshotter *snapshots.SnapshotStore)
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,
 		DBPort: cfg.DBPort,
+		DBName: cfg.DBName,
 	}
 
 	providers := strings.Split(d.cfg.ChainCfg.StateSync.RPCServers, ",")
 	// create state syncer
 	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir,
-		providers, snapshotter, *d.log.Named("stateSyncer"))
+		providers, snapshotter, *d.log.Named("state-syncer"))
 }
 
 func fileExists(name string) bool {

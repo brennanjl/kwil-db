@@ -411,11 +411,6 @@ func (a *AbciApp) Info(ctx context.Context, _ *abciTypes.RequestInfo) (*abciType
 		a.validatorAddressToPubKey[addr] = val.PubKey
 	}
 
-	err = a.txApp.ReloadDB(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload db: %w", err)
-	}
-
 	a.log.Info("ABCI application is ready", zap.Int64("height", height))
 
 	return &abciTypes.ResponseInfo{
@@ -488,7 +483,7 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 		return nil, errors.New("bootstrapper not set")
 	}
 
-	refetch, err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
+	dbRestored, refetch, err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
 	if err != nil {
 		var refetchChunks []uint32
 		if refetch {
@@ -498,6 +493,14 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 			Result:        statesync.ToABCIApplySnapshotChunkResponse(err),
 			RefetchChunks: refetchChunks,
 		}, nil
+	}
+
+	if dbRestored {
+		// Update the engine's in-memory info with the new database state
+		err := a.txApp.ReloadDB(ctx)
+		if err != nil {
+			return &abciTypes.ResponseApplySnapshotChunk{Result: abciTypes.ResponseApplySnapshotChunk_ABORT}, err
+		}
 	}
 
 	return &abciTypes.ResponseApplySnapshotChunk{Result: abciTypes.ResponseApplySnapshotChunk_ACCEPT, RefetchChunks: nil}, nil

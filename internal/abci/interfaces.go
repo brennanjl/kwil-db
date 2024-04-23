@@ -30,7 +30,7 @@ type StateSyncModule interface {
 	OfferSnapshot(snapshot *snapshots.Snapshot) error
 
 	// Offers a snapshot Chunk to the bootstrapper, once all the chunks corresponding to the snapshot are received, the databases are restored from the chunks
-	ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, error)
+	ApplySnapshotChunk(ctx context.Context, chunk []byte, index uint32) (bool, bool, error)
 }
 
 // TxApp is an application that can process transactions.
