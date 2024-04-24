@@ -288,12 +288,13 @@ cache_size = {{ .ChainCfg.Mempool.CacheSize }}
 # starting from the height of the snapshot.
 enable = {{ .ChainCfg.StateSync.Enable }}
 
-# Trusted snapshot providers (comma-separated) are the source-of-truth for the snapshot integrity.
+# Trusted snapshot providers (comma-separated chain RPC servers) are the source-of-truth for the snapshot integrity.
 # Snapshots are accepted for statesync only after verifying it with these trusted snapshot providers.
 # These are also used for light client verification of the synced state machine and
 # retrieval of state data for node bootstrapping.
-# Light client verification needs a trusted height and corresponding block hash obtained from a
+# Light client verification needs a trusted height and block hash at the configured block height obtained from a
 # trusted source, and a period during which validators can be trusted.
+# Atleast 2 trusted rpc servers are required for enabling state sync.
 rpc_servers = "{{ .ChainCfg.StateSync.RPCServers }}"
 trust_height = {{ .ChainCfg.StateSync.TrustHeight }}
 trust_hash = "{{ .ChainCfg.StateSync.TrustHash }}"
