@@ -15,6 +15,7 @@ var snapshotCmd = &cobra.Command{
 func NewSnapshotCmd() *cobra.Command {
 	snapshotCmd.AddCommand(
 		createCmd(),
+		restoreCmd(),
 	)
 
 	return snapshotCmd

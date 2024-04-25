@@ -3,25 +3,27 @@ package snapshot
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	cmdLongExplain = `Creates a snapshot of the database. The command is used during network migration to get the state of the KwilDB.
+	createLongExplain = `Creates a snapshot of the database. The command is used during network migration to get the state of the KwilDB.
 		It interacts directly with the Postgres server without intervening the kwild node.`
 )
 
 func createCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "create <db-name> <db-user> <db-host> <db-port> <snapshot-path>",
+		Use:   "create <db-name> <db-user> <db-host> <db-port> <snapshot-dir>",
 		Short: "Creates a snapshot of the database.",
-		Long:  cmdLongExplain,
+		Long:  createLongExplain,
 		Args:  cobra.ExactArgs(5),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
@@ -34,12 +36,15 @@ func createCmd() *cobra.Command {
 
 // pgDump tool directly requests Postgres DB to create logical dumps using pg_dump rather than interacting with the kwild.
 // This function downloads the snapshot from Postgres DB, sanitizes it and compresses it.
-func pgDump(ctx context.Context, dbName string, dbUser string, dbHost string, dbPort string, dumpFile string) error {
+func pgDump(ctx context.Context, dbName string, dbUser string, dbHost string, dbPort string, snapshotDir string) error {
 
-	if !strings.HasSuffix(dumpFile, ".gz") {
-		dumpFile += ".gz"
+	// Check if the snapshot directory exists, if not create it
+	err := os.MkdirAll(snapshotDir, os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot directory: %w", err)
 	}
 
+	dumpFile := filepath.Join(snapshotDir, "kwildb-snapshot.sql.gz")
 	outputFile, err := os.Create(dumpFile)
 	if err != nil {
 		return fmt.Errorf("failed to create dump file: %w", err)
@@ -51,14 +56,15 @@ func pgDump(ctx context.Context, dbName string, dbUser string, dbHost string, db
 		"--dbname", dbName,
 		"--format", "plain",
 		"--schema", "kwild_voting",
-		"--schema", "kwild_chain",
+		// "--schema", "kwild_chain", // kwild_chain is not included in this snapshot, as we start from genesis
 		"--schema", "kwild_accts",
 		"--schema", "kwild_internal",
 		"--schema", "ds_*",
-		"-T", "kwild_internal.sentry",
+		"-T", "kwild_internal.sentry", // Exclude sentry table
 		"--no-unlogged-table-data",
 		"--no-comments",
 		"--create",
+		"--clean", // drops database first before adding commands to create it
 		"--no-publications",
 		"--no-unlogged-table-data",
 		"--no-tablespaces",
@@ -104,7 +110,8 @@ func pgDump(ctx context.Context, dbName string, dbUser string, dbHost string, db
 	gzipWriter := gzip.NewWriter(outputFile)
 	defer gzipWriter.Close()
 
-	_, err = io.Copy(gzipWriter, sedStdoutPipe)
+	hasher := sha256.New()
+	_, err = io.Copy(io.MultiWriter(hasher, gzipWriter), sedStdoutPipe)
 	if err != nil {
 		return fmt.Errorf("failed to write compressed dump file: %w", err)
 	}
@@ -117,7 +124,22 @@ func pgDump(ctx context.Context, dbName string, dbUser string, dbHost string, db
 		return fmt.Errorf("failed to wait for sed command: %w", err)
 	}
 
-	fmt.Println("Snapshot created successfully at: ", dumpFile)
+	// Generate snapshot hash and use it as the genesis hash.
+	hash := hasher.Sum(nil)
+	hashStr := hex.EncodeToString(hash)
+	hashFile := filepath.Join(snapshotDir, "kwildb-snapshot-hash")
+	hashFileWriter, err := os.Create(hashFile)
+	if err != nil {
+		return fmt.Errorf("failed to create hash file: %w", err)
+	}
+	defer hashFileWriter.Close()
+
+	_, err = hashFileWriter.Write([]byte(hashStr))
+	if err != nil {
+		return fmt.Errorf("failed to write hash to file: %w", err)
+	}
+
+	fmt.Println("Snapshot created successfully at: ", dumpFile, " and hash at: ", hashFile)
 
 	return nil
 }
