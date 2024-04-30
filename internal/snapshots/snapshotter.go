@@ -11,12 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/kwilteam/kwil-db/core/log"
 	"github.com/kwilteam/kwil-db/internal/utils"
-	"go.uber.org/zap"
 )
 
 const (
@@ -58,8 +57,8 @@ func NewSnapshotter(cfg *DBConfig, dir string, logger log.Logger) *Snapshotter {
 // CreateSnapshot creates a snapshot at the given height and snapshotID
 func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapshotID string) (*Snapshot, error) {
 	// create snapshot directory
-	snapshotDir := SnapshotHeightDir(s.snapshotDir, height)
-	chunkDir := SnapshotChunkDir(s.snapshotDir, height, DefaultSnapshotFormat)
+	snapshotDir := snapshotHeightDir(s.snapshotDir, height)
+	chunkDir := snapshotChunkDir(s.snapshotDir, height, DefaultSnapshotFormat)
 	err := os.MkdirAll(chunkDir, 0755)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot chunk dir: %w", err)
@@ -68,28 +67,28 @@ func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapsho
 	// Stage1: Dump the database at the given height and snapshot ID
 	err = s.dbSnapshot(ctx, height, DefaultSnapshotFormat, snapshotID)
 	if err != nil {
-		deleteSnapshotDir(snapshotDir)
+		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to create snapshot at height %d: %w", height, err)
 	}
 
 	// Stage2: Sanitize the dump
 	hash, err := s.sanitizeDump(height, DefaultSnapshotFormat)
 	if err != nil {
-		deleteSnapshotDir(snapshotDir)
+		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to sanitize snapshot at height %d: %w", height, err)
 	}
 
 	// Stage3: Compress the dump
 	err = s.compressDump(height, DefaultSnapshotFormat)
 	if err != nil {
-		deleteSnapshotDir(snapshotDir)
+		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to compress snapshot at height %d: %w", height, err)
 	}
 
 	// Stage4: Split the dump into chunks
 	snapshot, err := s.splitDumpIntoChunks(height, DefaultSnapshotFormat, hash)
 	if err != nil {
-		deleteSnapshotDir(snapshotDir)
+		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to split snapshot into chunks at height %d: %w", height, err)
 	}
 
@@ -101,7 +100,7 @@ func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapsho
 // The pg dump is stored as "/stage1output.sql" in the snapshot directory
 // This is a temporary file and will be removed after the snapshot is created
 func (s *Snapshotter) dbSnapshot(ctx context.Context, height uint64, format uint32, snapshotID string) error {
-	snapshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
+	snapshotDir := snapshotFormatDir(s.snapshotDir, height, format)
 	dumpFile := filepath.Join(snapshotDir, stage1output)
 
 	pgDumpCmd := exec.CommandContext(ctx,
@@ -137,20 +136,20 @@ func (s *Snapshotter) dbSnapshot(ctx context.Context, height uint64, format uint
 		"-p", s.dbConfig.DBPort,
 	)
 
-	s.log.Debug("Executing pg_dump", zap.String("cmd", pgDumpCmd.String()))
+	s.log.Debug("Executing pg_dump", log.String("cmd", pgDumpCmd.String()))
 
 	output, err := pgDumpCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to execute pg_dump: %w, output: %s", err, output)
+		return fmt.Errorf("failed to execute pg_dump: %w, output: %s", err, string(output))
 	}
 
-	s.log.Info("pg_dump successful", zap.Uint64("height", height))
+	s.log.Info("pg_dump successful", log.Uint("height", height))
 
 	return nil
 }
 
-type HashedLine struct {
-	Hash   []byte
+type hashedLine struct {
+	Hash   [32]byte // sha256 hash of the line
 	offset int64
 }
 
@@ -162,7 +161,7 @@ type HashedLine struct {
 // This is a temporary file and will be removed after the snapshot is created
 func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error) {
 	// check if the stage1output file exists
-	snapshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
+	snapshotDir := snapshotFormatDir(s.snapshotDir, height, format)
 	dumpFile := filepath.Join(snapshotDir, stage1output)
 	dumpInst1, err := os.Open(dumpFile)
 	if err != nil {
@@ -186,9 +185,10 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 
 	// Scanner to read the dump file line by line
 	scanner := bufio.NewScanner(dumpInst1)
-	inCopyBlock := false
-	lineHashes := make([]HashedLine, 0)
-	offset := int64(0)
+	var inCopyBlock bool
+	var lineHashes []hashedLine
+	var offset int64
+	hasher := sha256.New()
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -206,8 +206,8 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 				inCopyBlock = false
 
 				// Inline sort the lineHashes array based on the row hash
-				sort.Slice(lineHashes, func(i, j int) bool {
-					return bytes.Compare(lineHashes[i].Hash, lineHashes[j].Hash) < 0
+				slices.SortFunc(lineHashes, func(a, b hashedLine) int {
+					return bytes.Compare(a.Hash[:], b.Hash[:])
 				})
 
 				/*
@@ -219,7 +219,7 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 				// Write the sorted data to the output file based on the offset
 				for _, hashedLine := range lineHashes {
 					// Seek to the offset of the line in the input file
-					_, err := dumpInst2.Seek(hashedLine.offset, 0)
+					_, err := dumpInst2.Seek(hashedLine.offset, io.SeekStart)
 					if err != nil {
 						return nil, fmt.Errorf("failed to seek to offset: %w", err)
 					}
@@ -242,18 +242,20 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 				}
 
 				// Clear the lineHashes array
-				lineHashes = make([]HashedLine, 0)
-				offset += numBytes // +1 for newline character
+				lineHashes = make([]hashedLine, 0)
+				offset += numBytes
 			} else {
 				// If we are in a COPY block, we need to sort the data based on the row hash
-				hasher := sha256.New()
+				hasher.Reset()
 				hasher.Write([]byte(line))
-				lineHashes = append(lineHashes, HashedLine{Hash: hasher.Sum(nil), offset: offset})
-				offset += numBytes // +1 for newline character
+				var hash [32]byte
+				copy(hash[:], hasher.Sum(nil))
+				lineHashes = append(lineHashes, hashedLine{Hash: hash, offset: offset})
+				offset += numBytes
 			}
 		} else {
 			offset += int64(len(line)) + 1 // +1 for newline character
-			if line == "" {
+			if line == "" || strings.TrimSpace(line) == "" {
 				// skip empty lines
 				continue
 			} else if strings.HasPrefix(line, "--") {
@@ -263,9 +265,9 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 				// skip SET and SELECT statements
 				continue
 			} else {
+				// Example: COPY kwild_voting.voters (id, name, power) FROM stdin;
 				if strings.HasPrefix(line, "COPY") && strings.Contains(line, "FROM stdin;") {
-					// start of COPY block
-					inCopyBlock = true
+					inCopyBlock = true // start of COPY block
 				}
 				// write the line to the output file
 				_, err := outputFile.WriteString(line + "\n")
@@ -279,6 +281,7 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("failed to scan the dump file: %w", err)
 	}
+	outputFile.Sync()
 
 	// remove the dump file
 	err = os.Remove(dumpFile)
@@ -288,10 +291,10 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 
 	hash, err := utils.HashFile(sanitizedDumpFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash sanitized dump file: %w", err)
+		return nil, fmt.Errorf("failed to hash the sanitized dump file: %w", err)
 	}
 
-	s.log.Info("Sanitized dump file", zap.Uint64("height", height), zap.String("dumpFile hash", fmt.Sprintf("%x", hash)))
+	s.log.Info("Sanitized dump file", log.Uint("height", height), log.String("dumpFile hash", fmt.Sprintf("%x", hash)))
 
 	return hash, nil
 }
@@ -301,7 +304,7 @@ func (s *Snapshotter) sanitizeDump(height uint64, format uint32) ([]byte, error)
 // Should we do inline compression? or using exec.Command?
 func (s *Snapshotter) compressDump(height uint64, format uint32) error {
 	// Check if the dump file exists
-	snapshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
+	snapshotDir := snapshotFormatDir(s.snapshotDir, height, format)
 	dumpFile := filepath.Join(snapshotDir, stage2output)
 	inputFile, err := os.Open(dumpFile)
 	if err != nil {
@@ -350,7 +353,7 @@ func (s *Snapshotter) compressDump(height uint64, format uint32) error {
 		return fmt.Errorf("failed to remove dump file: %w", err)
 	}
 
-	s.log.Info("Dump file compressed", zap.Uint64("height", height), zap.Uint64("Uncompressed dump size", uint64(stats.Size())), zap.Uint64("Compressed dump size", uint64(compressedStats.Size())))
+	s.log.Info("Dump file compressed", log.Uint("height", height), log.Uint("Uncompressed dump size", uint64(stats.Size())), log.Uint("Compressed dump size", uint64(compressedStats.Size())))
 
 	return nil
 }
@@ -361,7 +364,7 @@ func (s *Snapshotter) compressDump(height uint64, format uint32) error {
 // The snapshot header is created and stored in the height/format/header.json file
 func (s *Snapshotter) splitDumpIntoChunks(height uint64, format uint32, sqlDumpHash []byte) (*Snapshot, error) {
 	// check if the dump file exists
-	snapshotDir := SnapshotFormatDir(s.snapshotDir, height, format)
+	snapshotDir := snapshotFormatDir(s.snapshotDir, height, format)
 	dumpFile := filepath.Join(snapshotDir, stage3output)
 	inputFile, err := os.Open(dumpFile)
 	if err != nil {
@@ -370,15 +373,12 @@ func (s *Snapshotter) splitDumpIntoChunks(height uint64, format uint32, sqlDumpH
 	defer inputFile.Close()
 
 	// split the dump file into chunks
-
-	// split the dump file into chunks
-	chunkIndex := uint32(0)
-	hashes := make([][]byte, 0)
-	hasher := sha256.New()
-	fileSize := uint64(0)
+	var chunkIndex uint32
+	var hashes [][HashLen]byte
+	var fileSize uint64
 
 	for {
-		chunkFileName := SnapshotChunkFile(s.snapshotDir, height, format, chunkIndex)
+		chunkFileName := snapshotChunkFile(s.snapshotDir, height, format, chunkIndex)
 		chunkFile, err := os.Create(chunkFileName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create chunk file: %w", err)
@@ -390,18 +390,22 @@ func (s *Snapshotter) splitDumpIntoChunks(height uint64, format uint32, sqlDumpH
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to write chunk to file: %w", err)
 		}
+		chunkFile.Close() // chunkFile.Sync() probably
 
 		// calculate the hash of the chunk
-		hasher.Reset()
+		var chunkHash [HashLen]byte
 		hash, err := utils.HashFile(chunkFileName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to hash chunk file: %w", err)
+			return nil, fmt.Errorf("failed to hash the chunk file: %w", err)
 		}
-		hashes = append(hashes, hash)
+
+		copy(chunkHash[:], hash)
+
+		hashes = append(hashes, chunkHash)
 		fileSize += uint64(written)
 		chunkIndex++
 
-		s.log.Info("Chunk created", zap.Uint32("index", chunkIndex), zap.String("chunkFile", chunkFileName), zap.Int64("size", written))
+		s.log.Info("Chunk created", log.Uint("index", chunkIndex), log.String("chunkFile", chunkFileName), log.Int("size", written))
 
 		if err == io.EOF || written < chunkSize {
 			break // EOF, Last chunk
@@ -426,7 +430,7 @@ func (s *Snapshotter) splitDumpIntoChunks(height uint64, format uint32, sqlDumpH
 		SnapshotHash: sqlDumpHash,
 		SnapshotSize: fileSize,
 	}
-	headerFile := SnapshotHeaderFile(s.snapshotDir, height, format)
+	headerFile := snapshotHeaderFile(s.snapshotDir, height, format)
 	err = snapshot.SaveAs(headerFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save snapshot header: %w", err)
@@ -438,7 +442,7 @@ func (s *Snapshotter) splitDumpIntoChunks(height uint64, format uint32, sqlDumpH
 		return nil, fmt.Errorf("failed to remove dump file: %w", err)
 	}
 
-	s.log.Info("Chunk files created successfully", zap.Uint64("height", height), zap.Uint32("chunkCount", chunkIndex), zap.Uint64("Total Snapzhot Size", fileSize))
+	s.log.Info("Chunk files created successfully", log.Uint("height", height), log.Uint("chunkCount", chunkIndex), log.Uint("Total Snapzhot Size", fileSize))
 
 	return snapshot, nil
 }

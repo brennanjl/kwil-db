@@ -54,7 +54,6 @@ import (
 	abciTypes "github.com/cometbft/cometbft/abci/types"
 	cmtEd "github.com/cometbft/cometbft/crypto/ed25519"
 	cmtlocal "github.com/cometbft/cometbft/rpc/client/local"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -179,7 +178,7 @@ func buildServer(d *coreDependencies, closers *closeFuncs) *Server {
 
 	// these are dummies, but they might need init in the future.
 	snapshotter := buildSnapshotter(d)
-	statesyncer := buildStatesyncer(d, snapshotter)
+	statesyncer := buildStatesyncer(d)
 
 	// this is a hack
 	// we need the cometbft client to broadcast txs.
@@ -408,7 +407,7 @@ func buildEngine(d *coreDependencies, db *pg.DB) *execution.GlobalContext {
 	}
 
 	for name := range extensions {
-		d.log.Info("registered extension", zap.String("name", name))
+		d.log.Info("registered extension", log.String("name", name))
 	}
 
 	tx, err := db.BeginTx(d.ctx)
@@ -472,16 +471,14 @@ func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
 	}
 
-	snapshotter := snapshots.NewSnapshotter(dbCfg, cfg.Snapshots.SnapshotDir, *d.log.Named("snapshotter"))
-
-	ss, err := snapshots.NewSnapshotStore(snapshotCfg, snapshotter, *d.log.Named("snapshot-store"))
+	ss, err := snapshots.NewSnapshotStore(snapshotCfg, dbCfg, *d.log.Named("snapshot-store"))
 	if err != nil {
 		failBuild(err, "failed to build snapshot store")
 	}
 	return ss
 }
 
-func buildStatesyncer(d *coreDependencies, snapshotter *snapshots.SnapshotStore) *statesync.StateSyncer {
+func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
 	if !d.cfg.ChainCfg.StateSync.Enable {
 		return nil
 	}
@@ -497,9 +494,39 @@ func buildStatesyncer(d *coreDependencies, snapshotter *snapshots.SnapshotStore)
 	}
 
 	providers := strings.Split(d.cfg.ChainCfg.StateSync.RPCServers, ",")
+
+	configDone := false
+	for _, p := range providers {
+		clt, err := statesync.ChainRPCClient(p)
+		if err != nil {
+			continue
+		}
+
+		// Try to fetch the status of the remote server.
+		res, err := clt.Commit(d.ctx, nil)
+		if err != nil {
+			continue
+		}
+
+		// If the remote server is in the same chain, we can trust it.
+		if res.ChainID != d.genesisCfg.ChainID {
+			continue
+		}
+
+		// Get the trust height and trust hash from the remote server
+		d.cfg.ChainCfg.StateSync.TrustHeight = res.Height
+		d.cfg.ChainCfg.StateSync.TrustHash = res.Commit.BlockID.Hash.String()
+		configDone = true
+		break
+	}
+
+	if !configDone {
+		failBuild(nil, "failed to configure state syncer, failed to fetch trust options from the remote server.")
+	}
+
 	// create state syncer
-	return statesync.NewStateSyncer(d.ctx, dbCfg, cfg.Snapshots.SnapshotDir,
-		providers, snapshotter, *d.log.Named("state-syncer"))
+	return statesync.NewStateSyncer(d.ctx, dbCfg, d.cfg.ChainCfg.StateSync.SnapshotDir,
+		providers, *d.log.Named("state-syncer"))
 }
 
 func fileExists(name string) bool {
@@ -605,14 +632,14 @@ func buildAdminService(d *coreDependencies, closer *closeFuncs, admsvc admpb.Adm
 			if err != nil {
 				failBuild(err, "failed to generate admin client credentials")
 			}
-			d.log.Info("generated admin service client key pair", zap.String("cert", clientCertFile), zap.String("key", clientKeyFile))
+			d.log.Info("generated admin service client key pair", log.String("cert", clientCertFile), log.String("key", clientKeyFile))
 			if clientsCerts, err = os.ReadFile(clientCertFile); err != nil {
 				failBuild(err, "failed to read auto-generate client certificate")
 			}
 			if err = os.WriteFile(clientsFile, clientsCerts, 0644); err != nil {
 				failBuild(err, "failed to write client CAs file")
 			}
-			d.log.Info("generated admin service client CAs file", zap.String("file", clientsFile))
+			d.log.Info("generated admin service client CAs file", log.String("file", clientsFile))
 		} else {
 			d.log.Info("No admin client CAs file. Use kwil-admin's node gen-auth-key command to generate")
 		}

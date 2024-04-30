@@ -21,7 +21,7 @@ type Streamer struct {
 func NewStreamer(numChunks uint32, chunkDir string, logger log.Logger) *Streamer {
 	files := make([]string, numChunks)
 	for i := uint32(0); i < numChunks; i++ {
-		file := filepath.Join(chunkDir, fmt.Sprintf("chunk-%d", i))
+		file := filepath.Join(chunkDir, fmt.Sprintf("chunk-%d.sql.gz", i))
 		files[i] = file
 	}
 

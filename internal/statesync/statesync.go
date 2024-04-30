@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/kwilteam/kwil-db/core/log"
@@ -22,10 +23,6 @@ import (
 const (
 	ABCISnapshotQueryPath = "/snapshot/height"
 )
-
-type SnapshotStore interface {
-	RegisterSnapshot(snapshot *snapshots.Snapshot) error
-}
 
 type StateSyncer struct {
 	// statesync configuration
@@ -45,28 +42,35 @@ type StateSyncer struct {
 	chunks     map[uint32]bool // Chunks received till now
 	rcvdChunks uint32          // Number of chunks received till now
 
-	// snapshotStore
-	snapshotStore SnapshotStore
 	// Logger
 	log log.Logger
 }
 
-func NewStateSyncer(ctx context.Context, cfg *snapshots.DBConfig, snapshotDir string, providers []string, snapshotStore SnapshotStore, logger log.Logger) *StateSyncer {
+func NewStateSyncer(ctx context.Context, cfg *snapshots.DBConfig, snapshotDir string, providers []string, logger log.Logger) *StateSyncer {
 
 	ss := &StateSyncer{
-		dbConfig:      cfg,
-		snapshotsDir:  snapshotDir,
-		snapshotStore: snapshotStore,
-		log:           logger,
+		dbConfig:     cfg,
+		snapshotsDir: snapshotDir,
+		log:          logger,
 	}
 
 	for _, s := range providers {
-		clt, err := rpcClient(s)
+		clt, err := ChainRPCClient(s)
 		if err != nil {
 			logger.Error("Failed to create rpc client", zap.String("server", s), zap.Error(err))
 			return nil
 		}
 		ss.snapshotProviders = append(ss.snapshotProviders, clt)
+	}
+
+	// Ensure that the snasphot directory exists and is empty
+	if err := os.RemoveAll(snapshotDir); err != nil {
+		logger.Error("Failed to delete snapshot directory", zap.String("dir", snapshotDir), zap.Error(err))
+		return nil
+	}
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		logger.Error("Failed to create snapshot directory", zap.String("dir", snapshotDir), zap.Error(err))
+		return nil
 	}
 
 	return ss
@@ -92,22 +96,6 @@ func (ss *StateSyncer) OfferSnapshot(snapshot *snapshots.Snapshot) error {
 	ss.inProgress = true
 	ss.chunks = make(map[uint32]bool, snapshot.ChunkCount)
 	ss.rcvdChunks = 0
-
-	dir := snapshots.SnapshotChunkDir(ss.snapshotsDir, snapshot.Height, snapshot.Format)
-	err = os.MkdirAll(dir, 0755)
-	if err != nil {
-		ss.resetStateSync()
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// store snapshot header on disk
-	headerFile := snapshots.SnapshotHeaderFile(ss.snapshotsDir, snapshot.Height, snapshot.Format)
-	err = snapshot.SaveAs(headerFile)
-	if err != nil {
-		ss.resetStateSync()
-		return fmt.Errorf("failed to save snapshot header: %w", err)
-	}
-
 	return nil
 }
 
@@ -131,22 +119,20 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	}
 
 	// Validate the chunk hash
-	hash := sha256.New()
-	hash.Write(chunk)
-	chunkHash := hash.Sum(nil)
-	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index]) {
+	chunkHash := sha256.Sum256(chunk)
+	if !bytes.Equal(chunkHash[:], ss.snapshot.ChunkHashes[index][:]) {
 		return false, true, ErrRejectSnapshotChunk
 	}
 
 	// store the chunk on disk
-	chunkFileName := snapshots.SnapshotChunkFile(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format, index)
+	chunkFileName := filepath.Join(ss.snapshotsDir, fmt.Sprintf("chunk-%d.sql.gz", index))
 	chunkFile, err := os.Create(chunkFileName)
 	if err != nil {
 		return false, false, ErrRetrySnapshotChunk
 	}
 	defer chunkFile.Close()
 
-	_, err = chunkFile.Write(chunk)
+	err = os.WriteFile(chunkFileName, chunk, 0755)
 	if err != nil {
 		os.Remove(chunkFileName)
 		return false, false, ErrRetrySnapshotChunk
@@ -171,14 +157,6 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 		ss.inProgress = false
 		ss.chunks = nil
 		ss.rcvdChunks = 0
-
-		// Register the snapshot with the snapshot store for future use
-		err = ss.snapshotStore.RegisterSnapshot(ss.snapshot)
-		if err != nil {
-			ss.snapshot = nil
-			return false, false, nil // fail silently? as its okay to not register this snapshot
-		}
-
 		ss.snapshot = nil
 		return true, false, nil
 	}
@@ -219,8 +197,7 @@ func (ss *StateSyncer) restoreDB(ctx context.Context) error {
 
 // decompressAndValidateChunkStreams decompresses the chunk streams and validates the snapshot hash
 func (ss *StateSyncer) decompressAndValidateChunkStreams(output io.Writer) error {
-	chunksDir := snapshots.SnapshotChunkDir(ss.snapshotsDir, ss.snapshot.Height, ss.snapshot.Format)
-	streamer := NewStreamer(ss.snapshot.ChunkCount, chunksDir, ss.log)
+	streamer := NewStreamer(ss.snapshot.ChunkCount, ss.snapshotsDir, ss.log)
 	defer streamer.Close()
 
 	gzipReader, err := gzip.NewReader(streamer)
@@ -293,17 +270,17 @@ func (ss *StateSyncer) validateSnapshot(snapshot snapshots.Snapshot) error {
 }
 
 func (ss *StateSyncer) resetStateSync() {
-	ssDir := snapshots.SnapshotHeightDir(ss.snapshotsDir, ss.snapshot.Height)
-	os.RemoveAll(ssDir)
-
 	ss.inProgress = false
 	ss.snapshot = nil
 	ss.chunks = nil
 	ss.rcvdChunks = 0
+
+	os.RemoveAll(ss.snapshotsDir)
+	os.MkdirAll(ss.snapshotsDir, 0755)
 }
 
 // rpcClient sets up a new RPC client
-func rpcClient(server string) (*rpchttp.HTTP, error) {
+func ChainRPCClient(server string) (*rpchttp.HTTP, error) {
 	if !strings.Contains(server, "://") {
 		server = "http://" + server
 	}

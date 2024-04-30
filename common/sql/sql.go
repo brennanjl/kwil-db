@@ -93,7 +93,7 @@ type OuterTxMaker interface {
 // snapshot of the database. This uses serializable isolation level to ensure
 // internal consistency.
 type SnapshotTxMaker interface {
-	BeginSnapshotTx(ctx context.Context) (Tx, error)
+	BeginSnapshotTx(ctx context.Context) (Tx, string, error)
 }
 
 // AccessMode is the type of access to a database.

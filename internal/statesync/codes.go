@@ -1,6 +1,7 @@
 package statesync
 
 import (
+	"errors"
 	"fmt"
 
 	abciTypes "github.com/cometbft/cometbft/abci/types"
@@ -22,31 +23,31 @@ var (
 )
 
 func ToABCIOfferSnapshotResponse(err error) abciTypes.ResponseOfferSnapshot_Result {
-	switch err {
-	case nil:
+
+	if errors.Is(err, nil) {
 		return abciTypes.ResponseOfferSnapshot_ACCEPT
-	case ErrAbortSnapshot:
+	} else if errors.Is(err, ErrAbortSnapshot) {
 		return abciTypes.ResponseOfferSnapshot_ABORT
-	case ErrRejectSnapshot:
+	} else if errors.Is(err, ErrRejectSnapshot) {
 		return abciTypes.ResponseOfferSnapshot_REJECT
-	case ErrUnsupportedSnapshotFormat:
+	} else if errors.Is(err, ErrUnsupportedSnapshotFormat) {
 		return abciTypes.ResponseOfferSnapshot_REJECT_FORMAT
-	default:
+	} else {
 		return abciTypes.ResponseOfferSnapshot_UNKNOWN
 	}
 }
 
 func ToABCIApplySnapshotChunkResponse(err error) abciTypes.ResponseApplySnapshotChunk_Result {
-	switch err {
-	case nil:
+
+	if errors.Is(err, nil) {
 		return abciTypes.ResponseApplySnapshotChunk_ACCEPT
-	case ErrAbortSnapshotChunk:
+	} else if errors.Is(err, ErrAbortSnapshotChunk) {
 		return abciTypes.ResponseApplySnapshotChunk_ABORT
-	case ErrRetrySnapshotChunk:
+	} else if errors.Is(err, ErrRetrySnapshotChunk) {
 		return abciTypes.ResponseApplySnapshotChunk_RETRY
-	case ErrRejectSnapshotChunk:
+	} else if errors.Is(err, ErrRejectSnapshotChunk) {
 		return abciTypes.ResponseApplySnapshotChunk_REJECT_SNAPSHOT
-	default:
+	} else {
 		return abciTypes.ResponseApplySnapshotChunk_UNKNOWN
 	}
 }

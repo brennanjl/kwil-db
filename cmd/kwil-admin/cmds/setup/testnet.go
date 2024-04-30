@@ -96,8 +96,8 @@ func testnetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&withoutNonces, "without-nonces", false, "disable account nonces")
 	cmd.Flags().BoolVar(&withGas, "gas", false, "enable gas")
 	cmd.Flags().Var(&allocs, "alloc", "account=amount pairs of genesis account allocations")
-	cmd.Flags().BoolVar(&snapshotsEnabled, "snapshots.enable", false, "enables db snapshots")
-	cmd.Flags().Uint64Var(&maxSnapshots, "snapshots.max-snapshots", 3, "Maximum number of snapshots to store in the device")
-	cmd.Flags().Uint64Var(&snapshotHeights, "snapshots.heights", 10000, "Heights to snapshot the db")
+	cmd.Flags().BoolVar(&snapshotsEnabled, "--snaps", false, "enables db snapshots")
+	cmd.Flags().Uint64Var(&maxSnapshots, "--max-snaps", 3, "Maximum number of snapshots to store in the device")
+	cmd.Flags().Uint64Var(&snapshotHeights, "--snap-heights", 10000, "Recurring heights(multipes of --snap-heights) to take snapshots at")
 	return cmd
 }

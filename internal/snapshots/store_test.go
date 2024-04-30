@@ -2,6 +2,7 @@ package snapshots
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"testing"
 
@@ -18,38 +19,38 @@ func NewMockSnapshotter(dir string) *MockSnapshotter {
 }
 
 func (m *MockSnapshotter) CreateSnapshot(ctx context.Context, height uint64, snapshotID string) (*Snapshot, error) {
-	data := []byte(snapshotID)
+	data := sha256.Sum256([]byte(snapshotID))
 
 	snapshot := &Snapshot{
 		Height:       height,
 		Format:       0,
 		ChunkCount:   1,
-		ChunkHashes:  [][]byte{data},
-		SnapshotHash: data,
+		ChunkHashes:  [][HashLen]byte{data},
+		SnapshotHash: data[:],
 		SnapshotSize: uint64(len(data)),
 	}
 
 	// create the snapshot directory
-	chunkDir := SnapshotChunkDir(m.snapshotDir, height, 0)
+	chunkDir := snapshotChunkDir(m.snapshotDir, height, 0)
 	err := os.MkdirAll(chunkDir, 0755)
 	if err != nil {
 		return nil, err
 	}
 
-	headerFile := SnapshotHeaderFile(m.snapshotDir, height, 0)
+	headerFile := snapshotHeaderFile(m.snapshotDir, height, 0)
 	err = snapshot.SaveAs(headerFile)
 	if err != nil {
 		return nil, err
 	}
 
-	chunkFile := SnapshotChunkFile(m.snapshotDir, height, 0, 0)
+	chunkFile := snapshotChunkFile(m.snapshotDir, height, 0, 0)
 	file, err := os.Create(chunkFile)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	_, err = file.Write(data)
+	_, err = file.Write(data[:])
 	if err != nil {
 		return nil, err
 	}
@@ -57,9 +58,21 @@ func (m *MockSnapshotter) CreateSnapshot(ctx context.Context, height uint64, sna
 	return snapshot, nil
 }
 
+func NewMockSnapshotStore(dir string, cfg *SnapshotConfig, logger log.Logger) (*SnapshotStore, error) {
+	snapshotter := NewMockSnapshotter(dir)
+	store := &SnapshotStore{
+		cfg:             cfg,
+		snapshots:       make(map[uint64]*Snapshot),
+		snapshotHeights: make([]uint64, 0),
+		snapshotter:     snapshotter,
+		log:             logger,
+	}
+
+	return store, nil
+}
+
 func TestCreateSnapshots(t *testing.T) {
 	dir := t.TempDir()
-	snapshotter := NewMockSnapshotter(dir)
 	logger := log.NewStdOut(log.DebugLevel)
 
 	cfg := &SnapshotConfig{
@@ -67,7 +80,7 @@ func TestCreateSnapshots(t *testing.T) {
 		SnapshotDir:     dir,
 		MaxSnapshots:    2,
 	}
-	store, err := NewSnapshotStore(cfg, snapshotter, logger)
+	store, err := NewMockSnapshotStore(dir, cfg, logger)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -111,7 +124,6 @@ func TestCreateSnapshots(t *testing.T) {
 
 func TestRegisterSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	snapshotter := NewMockSnapshotter(dir)
 	logger := log.NewStdOut(log.DebugLevel)
 
 	cfg := &SnapshotConfig{
@@ -119,7 +131,7 @@ func TestRegisterSnapshot(t *testing.T) {
 		SnapshotDir:     dir,
 		MaxSnapshots:    2,
 	}
-	store, err := NewSnapshotStore(cfg, snapshotter, logger)
+	store, err := NewMockSnapshotStore(dir, cfg, logger)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -135,7 +147,7 @@ func TestRegisterSnapshot(t *testing.T) {
 
 	// Create a snapshot at height 1 through the snapshotter
 	height := uint64(1)
-	snapshot, err = snapshotter.CreateSnapshot(ctx, height, "snapshot1")
+	snapshot, err = store.snapshotter.CreateSnapshot(ctx, height, "snapshot1")
 	require.NoError(t, err)
 
 	// Register the snapshot
@@ -143,7 +155,7 @@ func TestRegisterSnapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create another snapshot at height 1
-	snapshot2, err := snapshotter.CreateSnapshot(ctx, height, "snapshot1-2")
+	snapshot2, err := store.snapshotter.CreateSnapshot(ctx, height, "snapshot1-2")
 	require.NoError(t, err)
 
 	// Register the snapshot, as snapshot already exists at the height, its a no-op
@@ -158,7 +170,7 @@ func TestRegisterSnapshot(t *testing.T) {
 
 	// Create a snapshot at height 2
 	height = 2
-	snapshot, err = snapshotter.CreateSnapshot(ctx, height, "snapshot2")
+	snapshot, err = store.snapshotter.CreateSnapshot(ctx, height, "snapshot2")
 	require.NoError(t, err)
 
 	// Register the snapshot
@@ -171,7 +183,7 @@ func TestRegisterSnapshot(t *testing.T) {
 
 	// Create a snapshot at height 3
 	height = 3
-	snapshot, err = snapshotter.CreateSnapshot(ctx, height, "snapshot3")
+	snapshot, err = store.snapshotter.CreateSnapshot(ctx, height, "snapshot3")
 	require.NoError(t, err)
 
 	// Register the snapshot
@@ -196,7 +208,7 @@ func TestLoadSnapshotChunk(t *testing.T) {
 		SnapshotDir:     dir,
 		MaxSnapshots:    2,
 	}
-	store, err := NewSnapshotStore(cfg, snapshotter, logger)
+	store, err := NewMockSnapshotStore(dir, cfg, logger)
 	require.NoError(t, err)
 
 	ctx := context.Background()

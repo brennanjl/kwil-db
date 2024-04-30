@@ -24,7 +24,7 @@ func TestSanitizeLogicalDump(t *testing.T) {
 
 	// Create snapshot directory
 	height := uint64(1)
-	formatDir := SnapshotFormatDir(dir, height, 0)
+	formatDir := snapshotFormatDir(dir, height, 0)
 	err := os.MkdirAll(formatDir, 0755)
 	require.NoError(t, err)
 

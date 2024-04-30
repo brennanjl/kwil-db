@@ -15,25 +15,47 @@ import (
 var (
 	restoreLongExplain = `Creates a snapshot of the database. The command is used during network migration to get the state of the KwilDB.
 		It interacts directly with the Postgres server without intervening the kwild node.`
+
+	restoreExample = `# Restore the database from the compressed snapshot file
+kwil-admin snapshot restore kwild localhost 5432 /path/to/snapshot.sql.gz
+DB restored successfully
+
+# Restore the database from the uncompressed snapshot file
+kwil-admin snapshot restore kwild localhost 5432 /path/to/snapshot.sql
+DB restored successfully
+
+# Database restore will fail if there are existing connections to the database
+kwil-admin snapshot restore kwild localhost 5432 /path/to/snapshot.sql
+ERROR:  database "kwild" is being accessed by other users
+
+Ensure that there are no active connections to the database before restoring the snapshot.`
 )
 
 func restoreCmd() *cobra.Command {
+	var snapshotFile, dbUser, dbPass, dbHost, dbPort string
 	cmd := &cobra.Command{
-		Use:   "restore <db-user> <db-host> <db-port> <snapshot-file>",
-		Short: "Restore the db state from the snapshot file.",
-		Long:  restoreLongExplain,
-		Args:  cobra.ExactArgs(4),
+		Use:     "restore <db-user> <db-host> <db-port> <snapshot-file>",
+		Short:   "Restore the db state from the snapshot file.",
+		Long:    restoreLongExplain,
+		Example: restoreExample,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			return restore(ctx, args[0], args[1], args[2], args[3])
+			return restore(cmd.Context(), dbUser, dbPass, dbHost, dbPort, snapshotFile)
 		},
 	}
-
+	cmd.Flags().StringVar(&snapshotFile, "snapshot-file", "", "Snapshot file to restore the database from.")
+	cmd.Flags().StringVar(&dbUser, "user", "postgres", "User with administrative privileges")
+	cmd.Flags().StringVar(&dbPass, "pass", "", "Password for the database user")
+	cmd.Flags().StringVar(&dbHost, "host", "localhost", "Host of the database")
+	cmd.Flags().StringVar(&dbPort, "port", "", "Port of the database")
 	return cmd
 }
 
-func restore(ctx context.Context, dbUser string, dbHost string, dbPort string, snapshotFile string) error {
+func restore(ctx context.Context, dbUser string, dbPass string, dbHost string, dbPort string, snapshotFile string) error {
 	// Check if the snapshot file exists, if not return error
+	if snapshotFile == "" {
+		return fmt.Errorf("snapshot file not provided")
+	}
+
 	snapfs, err := os.Open(snapshotFile)
 	if err != nil {
 		return fmt.Errorf("failed to open snapshot file: %w", err)
@@ -46,8 +68,13 @@ func restore(ctx context.Context, dbUser string, dbHost string, dbPort string, s
 		"--host", dbHost,
 		"--port", dbPort,
 		"--dbname", "postgres",
+		"--no-password",
 	)
 	psqlCmd.Stderr = os.Stderr
+
+	if dbPass != "" {
+		psqlCmd.Env = append(os.Environ(), "PGPASSWORD="+dbPass)
+	}
 
 	stdinPipe, err := psqlCmd.StdinPipe()
 	if err != nil {

@@ -49,7 +49,7 @@ type TxApp interface {
 	UpdateValidator(ctx context.Context, validator []byte, power int64) error
 	GetValidators(ctx context.Context) ([]*types.Validator, error)
 	AccountInfo(ctx context.Context, acctID []byte, getUncommitted bool) (balance *big.Int, nonce int64, err error)
-	ReloadDB(ctx context.Context) error
+	ReloadCache(ctx context.Context) error
 }
 
 // ConsensusParams returns kwil specific consensus parameters.

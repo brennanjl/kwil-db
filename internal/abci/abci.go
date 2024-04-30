@@ -480,12 +480,14 @@ func (a *AbciApp) InitChain(ctx context.Context, req *abciTypes.RequestInitChain
 // ApplySnapshotChunk is on the state sync connection
 func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.RequestApplySnapshotChunk) (*abciTypes.ResponseApplySnapshotChunk, error) {
 	if a.statesyncer == nil {
-		return nil, errors.New("bootstrapper not set")
+		return nil, fmt.Errorf("mismatched statesync configuration between CometBFT and ABCI app")
 	}
 
 	dbRestored, refetch, err := a.statesyncer.ApplySnapshotChunk(ctx, req.Chunk, req.Index)
 	if err != nil {
 		var refetchChunks []uint32
+		// If the chunk was not applied successfully either due to chunk hash mismatch or other reasons,
+		// refetch the chunk from other peers
 		if refetch {
 			refetchChunks = append(refetchChunks, req.Index)
 		}
@@ -496,8 +498,9 @@ func (a *AbciApp) ApplySnapshotChunk(ctx context.Context, req *abciTypes.Request
 	}
 
 	if dbRestored {
+		// DB restored successfully from the snapshot
 		// Update the engine's in-memory info with the new database state
-		err := a.txApp.ReloadDB(ctx)
+		err := a.txApp.ReloadCache(ctx)
 		if err != nil {
 			return &abciTypes.ResponseApplySnapshotChunk{Result: abciTypes.ResponseApplySnapshotChunk_ABORT}, err
 		}
@@ -550,23 +553,22 @@ func (a *AbciApp) LoadSnapshotChunk(ctx context.Context, req *abciTypes.RequestL
 
 // OfferSnapshot is on the state sync connection
 func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOfferSnapshot) (*abciTypes.ResponseOfferSnapshot, error) {
-	// snapshot := convertABCISnapshots(req.Snapshot)
+	if a.statesyncer == nil {
+		return &abciTypes.ResponseOfferSnapshot{
+				Result: abciTypes.ResponseOfferSnapshot_REJECT},
+			fmt.Errorf("mismatched statesync configuration between CometBFT and ABCI app")
+	}
+
 	var snapshot snapshots.Snapshot
 	err := json.Unmarshal(req.Snapshot.Metadata, &snapshot)
 	if err != nil {
 		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, err
 	}
 
-	if a.statesyncer == nil {
-		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
-	}
-
 	err = a.statesyncer.OfferSnapshot(&snapshot)
 	if err != nil {
-		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, nil
+		return &abciTypes.ResponseOfferSnapshot{Result: statesync.ToABCIOfferSnapshotResponse(err)}, nil
 	}
-	// a.bootupState.appHash = req.Snapshot.Hash
-	// a.bootupState.height = int64(snapshot.Height)
 	return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_ACCEPT}, nil
 }
 

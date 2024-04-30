@@ -36,8 +36,8 @@ func AddConfigFlags(flagSet *pflag.FlagSet, cfg *KwildConfig) {
 
 	// Snapshot Config flags
 	flagSet.BoolVar(&cfg.AppCfg.Snapshots.Enabled, "app.snapshots.enabled", cfg.AppCfg.Snapshots.Enabled, "Enable snapshots")
-	flagSet.Uint64Var(&cfg.AppCfg.Snapshots.RecurringHeight, "app.snapshots.recurring-height", cfg.AppCfg.Snapshots.RecurringHeight, "Recurring snapshot height")
-	flagSet.Uint64Var(&cfg.AppCfg.Snapshots.MaxSnapshots, "app.snapshots.max-snapshots", cfg.AppCfg.Snapshots.MaxSnapshots, "Maximum snapshots")
+	flagSet.Uint64Var(&cfg.AppCfg.Snapshots.RecurringHeight, "app.snapshots.recurring-height", cfg.AppCfg.Snapshots.RecurringHeight, "Recurring heights to create snapshots")
+	flagSet.Uint64Var(&cfg.AppCfg.Snapshots.MaxSnapshots, "app.snapshots.max-snapshots", cfg.AppCfg.Snapshots.MaxSnapshots, "Maximum snapshots to store on disk. Default is 3. If max snapshots is reached, the oldest snapshot is deleted.")
 	flagSet.StringVar(&cfg.AppCfg.Snapshots.SnapshotDir, "app.snapshots.snapshot-dir", cfg.AppCfg.Snapshots.SnapshotDir, "Snapshot directory path")
 
 	// Basic Chain Config flags
@@ -76,12 +76,8 @@ to instead run a dedicated seeder like https://github.com/kwilteam/cometseed.`)
 
 	// State Sync flags
 	flagSet.BoolVar(&cfg.ChainCfg.StateSync.Enable, "chain.statesync.enable", cfg.ChainCfg.StateSync.Enable, "Chain state sync enable")
+	flagSet.StringVar(&cfg.ChainCfg.StateSync.SnapshotDir, "chain.statesync.snapshot-dir", cfg.ChainCfg.StateSync.SnapshotDir, "Chain state sync snapshot directory")
 	flagSet.StringVar(&cfg.ChainCfg.StateSync.RPCServers, "chain.statesync.rpc-servers", cfg.ChainCfg.StateSync.RPCServers, "Chain state sync rpc servers")
 	flagSet.Var(&cfg.ChainCfg.StateSync.DiscoveryTime, "chain.statesync.discovery-time", "Chain state sync discovery time")
 	flagSet.Var(&cfg.ChainCfg.StateSync.ChunkRequestTimeout, "chain.statesync.chunk-request-timeout", "Chain state sync chunk request timeout")
-
-	// Light client verification options for statesync
-	flagSet.Int64Var(&cfg.ChainCfg.StateSync.TrustHeight, "chain.statesync.trust-height", cfg.ChainCfg.StateSync.TrustHeight, "Trusted Height for light client verification for statesync")
-	flagSet.StringVar(&cfg.ChainCfg.StateSync.TrustHash, "chain.statesync.trust-hash", cfg.ChainCfg.StateSync.TrustHash, "Block hash at the trusted height for light client verification")
-	flagSet.Var(&cfg.ChainCfg.StateSync.TrustPeriod, "chain.statesync.trust-period", "Trust period for light client verification")
 }

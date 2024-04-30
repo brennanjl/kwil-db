@@ -208,28 +208,24 @@ func (r *TxApp) ChainInfo(ctx context.Context) (int64, []byte, error) {
 	return height, appHash, nil
 }
 
-// ReloadDB reloads the database state into the engine.
-func (r *TxApp) ReloadDB(ctx context.Context) error {
+// ReloadCache reloads the database state into the engine.
+func (r *TxApp) ReloadCache(ctx context.Context) error {
 	tx, err := r.Database.BeginReadTx(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	// Check if we are switching from StateSync?
-	// If so, we need to reload the engine.
-	height, app_hash, err := getChainState(ctx, tx)
+	// Reload the engine internal state from the updated database state
+	err = r.Engine.Reload(ctx, tx)
 	if err != nil {
 		return err
 	}
 
-	if r.height == 0 && height > r.height && r.appHash == nil {
-		err = r.Engine.Reload(ctx, tx)
-		if err != nil {
-			return err
-		}
-		r.height = height
-		r.appHash = app_hash
+	// Update the height and apphash from the updated database state
+	r.height, r.appHash, err = getChainState(ctx, tx)
+	if err != nil {
+		return err
 	}
 
 	return tx.Commit(ctx)
@@ -400,6 +396,7 @@ func (r *TxApp) Finalize(ctx context.Context, blockHeight int64) (appHash []byte
 
 	r.log.Debug("Finalize(start)", log.Int("height", r.height), log.String("appHash", hex.EncodeToString(r.appHash)))
 
+	// Check that the block height is correct
 	if blockHeight != r.height+1 {
 		return nil, nil, fmt.Errorf("Finalize was expecting height %d, got %d", r.height+1, blockHeight)
 	}
@@ -679,8 +676,8 @@ func (r *TxApp) Commit(ctx context.Context) error {
 	r.announceValidators()
 
 	// Take a snapshot of the database if node is not in the catchup mode and snapshots are enabled
-	if r.replayStatusFn != nil && !r.replayStatusFn() &&
-		r.snapshotter != nil && r.snapshotter.IsSnapshotDue(uint64(r.height)) {
+	if r.snapshotter != nil && r.replayStatusFn != nil &&
+		r.snapshotter.IsSnapshotDue(uint64(r.height)) && !r.replayStatusFn() {
 		err = r.snapshotDatabase(ctx)
 		if err != nil {
 			return err
@@ -690,34 +687,18 @@ func (r *TxApp) Commit(ctx context.Context) error {
 }
 
 func (r *TxApp) snapshotDatabase(ctx context.Context) error {
-	snapTx, err := r.Database.BeginSnapshotTx(ctx)
+	snapTx, snapshotID, err := r.Database.BeginSnapshotTx(ctx)
 	if err != nil {
 		return err
 	}
+	defer snapTx.Rollback(ctx)
 
-	// export snpashot id
-	res, err := snapTx.Execute(ctx, "SELECT pg_export_snapshot();")
+	err = r.snapshotter.CreateSnapshot(ctx, uint64(r.height), snapshotID)
 	if err != nil {
-		return err
+		r.log.Error("failed to dump logical snapshot", zap.Error(err))
 	}
 
-	// Expected to have 1 row and 1 column
-	if len(res.Columns) != 1 || len(res.Rows) != 1 {
-		return fmt.Errorf("unexpected result from pg_export_snapshot: %v", res)
-	}
-
-	snapshotID := res.Rows[0][0].(string)
-	r.log.Debug("Creating snapshot", zap.String("Snapshot ID", snapshotID), zap.Int64("height", r.height))
-
-	go func(ctx context.Context, snapshotID string, snapTx sql.Tx, height uint64) {
-		// snapTx will be closed once the snapshots are taken at the given snapshotID
-		defer snapTx.Rollback(ctx)
-
-		err := r.snapshotter.CreateSnapshot(ctx, height, snapshotID)
-		if err != nil {
-			r.log.Error("failed to dump logical snapshot", zap.Error(err))
-		}
-	}(ctx, snapshotID, snapTx, uint64(r.height))
+	r.log.Info("Snapshot created successfully", zap.Int64("height", r.height))
 
 	return nil
 }

@@ -327,14 +327,10 @@ func GenerateTestnetConfig(genCfg *TestnetGenerateConfig, opts *ConfigOpts) erro
 
 		if genCfg.MaxSnapshots != 0 {
 			cfg.AppCfg.Snapshots.MaxSnapshots = genCfg.MaxSnapshots
-		} else {
-			cfg.AppCfg.Snapshots.MaxSnapshots = 3
 		}
 
 		if genCfg.SnapshotHeights != 0 {
 			cfg.AppCfg.Snapshots.RecurringHeight = genCfg.SnapshotHeights
-		} else {
-			cfg.AppCfg.Snapshots.RecurringHeight = 10000
 		}
 	}
 

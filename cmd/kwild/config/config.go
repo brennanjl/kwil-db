@@ -85,7 +85,7 @@ type AppConfig struct {
 
 type SnapshotConfig struct {
 	Enabled         bool   `mapstructure:"enabled"`
-	RecurringHeight uint64 `mapstructure:"snapshot_heights"`
+	RecurringHeight uint64 `mapstructure:"recurring_height"`
 	MaxSnapshots    uint64 `mapstructure:"max_snapshots"`
 	SnapshotDir     string `mapstructure:"snapshot_dir"`
 }
@@ -166,12 +166,25 @@ type ConsensusConfig struct {
 }
 
 type StateSyncConfig struct {
-	Enable              bool     `mapstructure:"enable"`
-	RPCServers          string   `mapstructure:"rpc_servers"`
-	DiscoveryTime       Duration `mapstructure:"discovery_time"`
+	Enable bool `mapstructure:"enable"`
+
+	// SnapshotDir is the directory to store the received snapshot chunks.
+	SnapshotDir string `mapstructure:"snapshot_dir"`
+
+	// Trusted snapshot servers to fetch/validate the snapshots from.
+	// Atleast 2 servers are required for the state sync to work.
+	RPCServers string `mapstructure:"rpc_servers"`
+
+	// Time to spend discovering snapshots before initiating starting
+	// the db restoration using snapshot.
+	DiscoveryTime Duration `mapstructure:"discovery_time"`
+
+	// The timeout duration before re-requesting a chunk, possibly from a different
+	// peer (default: 1 minute).
 	ChunkRequestTimeout Duration `mapstructure:"chunk_request_timeout"`
 
-	// Light client verification options
+	// Light client verification options, Automatically fetched from the RPC Servers
+	// during the node initialization.
 	TrustHeight int64    `mapstructure:"trust_height"`
 	TrustHash   string   `mapstructure:"trust_hash"`
 	TrustPeriod Duration `mapstructure:"trust_period"`
@@ -497,9 +510,9 @@ func DefaultConfig() *KwildConfig {
 			Extensions:         make(map[string]map[string]string),
 			Snapshots: SnapshotConfig{
 				Enabled:         false,
-				RecurringHeight: 10000,
+				RecurringHeight: 14400, // 1 day at 6s block time
 				MaxSnapshots:    3,
-				SnapshotDir:     "snapshots",
+				SnapshotDir:     SnapshotDirName,
 			},
 		},
 		Logging: &Logging{
@@ -533,6 +546,7 @@ func DefaultConfig() *KwildConfig {
 			},
 			StateSync: &StateSyncConfig{
 				Enable:              false,
+				SnapshotDir:         ReceivedSnapsDirName,
 				DiscoveryTime:       Duration(15 * time.Second),
 				ChunkRequestTimeout: Duration(10 * time.Second),
 			},
@@ -614,6 +628,13 @@ func (cfg *KwildConfig) sanitizeCfgPaths() {
 	} else {
 		cfg.AppCfg.Snapshots.SnapshotDir = filepath.Join(rootDir, SnapshotDirName)
 	}
+
+	if cfg.ChainCfg.StateSync.SnapshotDir != "" {
+		cfg.ChainCfg.StateSync.SnapshotDir = rootify(cfg.ChainCfg.StateSync.SnapshotDir, rootDir)
+	} else {
+		cfg.ChainCfg.StateSync.SnapshotDir = filepath.Join(rootDir, ReceivedSnapsDirName)
+	}
+
 	fmt.Println("Snapshot dir path:", cfg.AppCfg.Snapshots.SnapshotDir)
 }
 
