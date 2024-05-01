@@ -1,12 +1,14 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -391,6 +393,10 @@ func buildSigner(d *coreDependencies) *auth.Ed25519Signer {
 }
 
 func buildDB(d *coreDependencies, closer *closeFuncs) *pg.DB {
+	// Check if the database is supposed to be restored from the snapshot
+	// If yes, restore the database from the snapshot
+	restoreDB(d)
+
 	db, err := d.dbOpener(d.ctx, d.cfg.AppCfg.DBName, 11)
 	if err != nil {
 		failBuild(err, "kwild database open failed")
@@ -398,6 +404,81 @@ func buildDB(d *coreDependencies, closer *closeFuncs) *pg.DB {
 	closer.addCloser(db.Close, "closing main DB")
 
 	return db
+}
+
+// restoreDB restores the database from a snapshot if the genesis apphash is specified.
+// Genesis apphash ensures that all the nodes in the network start from the same state.
+// Genesis apphash should match the hash of the snapshot file.
+// Snapshot file can be compressed or uncompressed represented by .gz extension.
+// DB restoration from snapshot is skipped in the following scenarios:
+//   - If the DB is already initialized (i.e this is not a new node)
+//   - If the genesis apphash is not specified
+//   - If statesync is enabled. Statesync will take care of rapildly syncing the database
+//     to the network state using statesync snapshots.
+func restoreDB(d *coreDependencies) {
+	if isDbInitialized(d) || d.genesisCfg.DataAppHash == nil || d.cfg.ChainCfg.StateSync.Enable {
+		return
+	}
+
+	genCfg := d.genesisCfg
+	appCfg := d.cfg.AppCfg
+	// DB is uninitialized and genesis apphash is specified.
+	// DB is supposed to be restored from the snapshot.
+	// Ensure that the snapshot file exists and the snapshot hash matches the genesis apphash.
+
+	// Ensure that the snapshot file exists, if node is supposed to start with a snapshot state
+	if genCfg.DataAppHash != nil && appCfg.SnapshotFile == "" {
+		failBuild(nil, "snapshot file not provided")
+	}
+
+	// Snapshot file exists
+	snapFile, err := os.Open(appCfg.SnapshotFile)
+	if err != nil {
+		failBuild(err, "failed to open snapshot file")
+	}
+
+	// Check if the snapshot file is compressed, if yes decompress it
+	var reader io.Reader
+	if strings.HasSuffix(appCfg.SnapshotFile, ".gz") {
+		// Decompress the snapshot file
+		gzipReader, err := gzip.NewReader(snapFile)
+		if err != nil {
+			failBuild(err, "failed to create gzip reader")
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	} else {
+		reader = snapFile
+	}
+
+	// Restore DB from the snapshot if snapshot matches.
+	err = statesync.RestoreDB(d.ctx, reader, appCfg.DBName, appCfg.DBUser, appCfg.DBPass,
+		appCfg.DBHost, appCfg.DBPort, genCfg.DataAppHash, d.log)
+	if err != nil {
+		failBuild(err, "failed to restore DB from snapshot")
+	}
+}
+
+// isDbInitialized checks if the database is already initialized.
+func isDbInitialized(d *coreDependencies) bool {
+	db, err := d.dbOpener(d.ctx, d.cfg.AppCfg.DBName, 11)
+	if err != nil {
+		failBuild(err, "kwild database open failed")
+	}
+	defer db.Close()
+
+	// Check if the database is empty or initialized previously
+	// If the database is empty, we need to restore the database from the snapshot
+	initTx, err := db.BeginTx(d.ctx)
+	if err != nil {
+		failBuild(err, "could not start app initialization DB transaction")
+	}
+	defer initTx.Rollback(d.ctx)
+
+	_, err = voting.GetValidators(d.ctx, initTx)
+	// ERROR: relation "kwild_voting.voters" does not exist
+	// assumption that error is due to the missing table and schema.
+	return err == nil
 }
 
 func buildEngine(d *coreDependencies, db *pg.DB) *execution.GlobalContext {

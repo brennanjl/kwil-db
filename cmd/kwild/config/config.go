@@ -81,6 +81,11 @@ type AppConfig struct {
 	Extensions         map[string]map[string]string `mapstructure:"extensions"`
 
 	Snapshots SnapshotConfig `mapstructure:"snapshots"`
+
+	// SnapshotFile is the path to the snapshot file to load on startup
+	// during network initialization. If genesis app_hash is not provided,
+	// this snapshot file is not used.
+	SnapshotFile string `mapstructure:"snapshot_file"`
 }
 
 type SnapshotConfig struct {
@@ -514,6 +519,7 @@ func DefaultConfig() *KwildConfig {
 				MaxSnapshots:    3,
 				SnapshotDir:     SnapshotDirName,
 			},
+			SnapshotFile: "",
 		},
 		Logging: &Logging{
 			Level:        "info",
@@ -549,6 +555,7 @@ func DefaultConfig() *KwildConfig {
 				SnapshotDir:         ReceivedSnapsDirName,
 				DiscoveryTime:       Duration(15 * time.Second),
 				ChunkRequestTimeout: Duration(10 * time.Second),
+				TrustPeriod:         Duration(36000 * time.Second),
 			},
 			Consensus: &ConsensusConfig{
 				TimeoutPropose:   Duration(3 * time.Second),
@@ -633,6 +640,10 @@ func (cfg *KwildConfig) sanitizeCfgPaths() {
 		cfg.ChainCfg.StateSync.SnapshotDir = rootify(cfg.ChainCfg.StateSync.SnapshotDir, rootDir)
 	} else {
 		cfg.ChainCfg.StateSync.SnapshotDir = filepath.Join(rootDir, ReceivedSnapsDirName)
+	}
+
+	if cfg.AppCfg.SnapshotFile != "" {
+		cfg.AppCfg.SnapshotFile = rootify(cfg.AppCfg.SnapshotFile, rootDir)
 	}
 
 	fmt.Println("Snapshot dir path:", cfg.AppCfg.Snapshots.SnapshotDir)

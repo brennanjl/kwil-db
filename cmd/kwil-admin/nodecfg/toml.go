@@ -63,6 +63,7 @@ const defaultConfigTemplate = `
 #   |   |- info/
 #   |- signing/
 #   |- snapshots/
+#   |- rcvdSnaps/
 
 # Only the config.toml and genesis file are required to run the kwild node
 # The rest of the files & directories are created by the kwild node on startup
@@ -139,7 +140,9 @@ tls_key_file = "{{ .AppCfg.TLSKeyFile }}"
 # Kwild Server hostname
 hostname = "{{ .AppCfg.Hostname }}"
 
-
+# Path to the snapshot file to restore the database from.
+# Used during the network migration process.
+snapshot_file = "{{ .AppCfg.SnapshotFile }}"
 #######################################################################
 ###                     Extension Configuration                     ###
 #######################################################################
@@ -299,7 +302,7 @@ cache_size = {{ .ChainCfg.Mempool.CacheSize }}
 # starting from the height of the snapshot.
 enable = {{ .ChainCfg.StateSync.Enable }}
 
-// SnapshotDir is the directory to store the received snapshot chunks.
+# SnapshotDir is the directory to store the received snapshot chunks.
 snapshot_dir = "{{ .ChainCfg.StateSync.SnapshotDir }}"
 
 # Trusted snapshot providers (comma-separated chain RPC servers) are the source-of-truth for the snapshot integrity.

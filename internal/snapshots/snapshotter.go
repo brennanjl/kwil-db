@@ -128,13 +128,19 @@ func (s *Snapshotter) dbSnapshot(ctx context.Context, height uint64, format uint
 		"--no-security-labels",
 		"--no-subscriptions",
 		"--large-objects",
+		"--no-owner",
 		// Snapshot ID ensures a consistent snapshot taken at the given block boundary across all nodes
 		"--snapshot", snapshotID,
 		// Connection options
 		"-U", s.dbConfig.DBUser,
 		"-h", s.dbConfig.DBHost,
 		"-p", s.dbConfig.DBPort,
+		"--no-password",
 	)
+
+	if s.dbConfig.DBPass != "" {
+		pgDumpCmd.Env = append(pgDumpCmd.Env, "PGPASSWORD="+s.dbConfig.DBPass)
+	}
 
 	s.log.Debug("Executing pg_dump", log.String("cmd", pgDumpCmd.String()))
 

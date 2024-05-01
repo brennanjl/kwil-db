@@ -162,11 +162,12 @@ func TestRegisterSnapshot(t *testing.T) {
 	err = store.RegisterSnapshot(snapshot2)
 	require.NoError(t, err)
 
+	snapHash := sha256.Sum256([]byte("snapshot1"))
 	// List snapshots
 	snaps = store.ListSnapshots()
 	require.Len(t, snaps, 1)
 	require.Equal(t, height, snaps[0].Height)
-	require.Equal(t, []byte("snapshot1"), snaps[0].SnapshotHash)
+	require.Equal(t, snapHash[:], snaps[0].SnapshotHash)
 
 	// Create a snapshot at height 2
 	height = 2
@@ -221,11 +222,11 @@ func TestLoadSnapshotChunk(t *testing.T) {
 	// Register the snapshot
 	err = store.RegisterSnapshot(snapshot)
 	require.NoError(t, err)
-
+	snapHash := sha256.Sum256([]byte("snapshot1"))
 	// Load the snapshot chunk
 	data, err := store.LoadSnapshotChunk(height, 0, 0)
 	require.NoError(t, err)
-	require.Equal(t, []byte("snapshot1"), data)
+	require.Equal(t, snapHash[:], data)
 
 	// Load the snapshot chunk that doesn't exist
 	data, err = store.LoadSnapshotChunk(height, 0, 1)

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/kwilteam/kwil-db/cmd/kwild/config"
+
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +32,8 @@ kwil-admin snapshot create kwil-db kwil_user localhost 5432 /path/to/snapshot/di
 # Snapshot and hash files will be created in the snapshot directory
 ls /path/to/snapshot/dir
 kwildb-snapshot-hash    kwildb-snapshot.sql.gz`
+
+	createDatabase = `CREATE DATABASE `
 )
 
 /*
@@ -54,7 +59,7 @@ func createCmd() *cobra.Command {
 				return fmt.Errorf("failed to expand snapshot directory path: %w", err)
 			}
 
-			return pgDumpRetry(cmd.Context(), dbName, dbUser, dbPass, dbHost, dbPort, snapshotDir)
+			return pgDump(cmd.Context(), dbName, dbUser, dbPass, dbHost, dbPort, snapshotDir)
 		},
 	}
 
@@ -79,145 +84,7 @@ func expandPath(path string) (string, error) {
 	return filepath.Abs(path)
 }
 
-// pgDump tool directly requests Postgres DB to create logical dumps using pg_dump rather than interacting with the kwild.
-// This function downloads the snapshot from Postgres DB, sanitizes it and compresses it.
-// func pgDump(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, snapshotDir string) error {
-
-// 	// Check if the snapshot directory exists, if not create it
-// 	err := os.MkdirAll(snapshotDir, 0755)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create snapshot directory: %w", err)
-// 	}
-
-// 	dumpFile := filepath.Join(snapshotDir, "kwildb-snapshot.sql.gz")
-// 	outputFile, err := os.Create(dumpFile)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create dump file: %w", err)
-// 	}
-// 	defer outputFile.Close()
-
-// 	pgDumpCmd := exec.CommandContext(ctx,
-// 		"pg_dump",
-// 		"--dbname", dbName,
-// 		"--format", "plain",
-// 		// Voting Schema (remove the COPY command from voters table during sanitization)
-// 		"--schema", "kwild_voting", // Include only the processed table
-// 		"-T", "kwild_voting.votes", // Exclude votes table
-// 		"-T", "kwild_voting.resolutions", // Exclude resolutions table
-// 		"-T", "kwild_voting.resolution_types", // Exclude resolution_types table
-
-// 		// Account Schema (remove the COPY command from accounts during sanitization)
-// 		"--schema", "kwild_accts",
-
-// 		// Internal Schema
-// 		"--schema", "kwild_internal",
-// 		"-T", "kwild_internal.sentry", // Exclude sentry table
-
-// 		// User Schemas
-// 		"--schema", "ds_*",
-
-// 		// kwild_chain is not included in this snapshot, as we start from genesis
-
-// 		// Other options
-// 		"--no-unlogged-table-data",
-// 		"--no-comments",
-// 		"--create",
-// 		"--clean", // drops database first before adding commands to create it
-// 		"--no-publications",
-// 		"--no-unlogged-table-data",
-// 		"--no-tablespaces",
-// 		"--no-table-access-method",
-// 		"--no-security-labels",
-// 		"--no-subscriptions",
-// 		"--large-objects",
-// 		"--username", dbUser,
-// 		"--host", dbHost,
-// 		"--port", dbPort,
-// 		"--no-password",
-// 	)
-
-// 	if dbPass != "" {
-// 		pgDumpCmd.Env = append(os.Environ(), "PGPASSWORD="+dbPass)
-// 	}
-
-// 	sedCmd := exec.CommandContext(ctx, "sed",
-// 		"-e", "/^--/d", // exclude SQL comments
-// 		"-e", "/^$/d", // exclude empty lines?
-// 		"-e", "/^SET/d", // exclude lines beginning with SET
-// 		"-e", "/^SELECT/d") // exclude lines beginning with SELECT
-
-// 	// Create a pipe between pg_dump and sed commands
-// 	var stderr bytes.Buffer
-// 	reader, writer := io.Pipe()
-// 	pgDumpCmd.Stdout = writer
-// 	sedCmd.Stdin = reader
-// 	pgDumpCmd.Stderr = &stderr
-
-// 	var pgDumpErr error
-
-// 	sedStdoutPipe, err := sedCmd.StdoutPipe()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create stdout pipe from sed command: %w", err)
-// 	}
-
-// 	if err := sedCmd.Start(); err != nil {
-// 		return fmt.Errorf("failed to start sed command: %w", err)
-// 	}
-
-// 	if err := pgDumpCmd.Start(); err != nil {
-// 		return fmt.Errorf("failed to start pg_dump command: %w", err)
-// 	}
-
-// 	// Close the writer when pg_dump completes to signal EOF to sed
-// 	go func() {
-// 		if err := pgDumpCmd.Wait(); err != nil {
-// 			pgDumpErr = fmt.Errorf("%s", stderr.String())
-// 		}
-// 		writer.Close()
-// 	}()
-
-// 	// Compress the sed output
-// 	gzipWriter := gzip.NewWriter(outputFile)
-// 	defer gzipWriter.Close()
-
-// 	hasher := sha256.New()
-// 	_, err = io.Copy(io.MultiWriter(hasher, gzipWriter), sedStdoutPipe)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to write compressed dump file: %w", err)
-// 	}
-
-// 	if err := gzipWriter.Close(); err != nil {
-// 		return fmt.Errorf("failed to close gzip writer: %w", err)
-// 	}
-
-// 	if pgDumpErr != nil {
-// 		return pgDumpErr
-// 	}
-
-// 	if err := sedCmd.Wait(); err != nil {
-// 		return fmt.Errorf("failed to wait for sed command: %w", err)
-// 	}
-
-// 	// Generate snapshot hash and use it as the genesis hash.
-// 	hash := hasher.Sum(nil)
-// 	hashStr := hex.EncodeToString(hash)
-// 	hashFile := filepath.Join(snapshotDir, "kwildb-snapshot-hash")
-// 	hashFileWriter, err := os.Create(hashFile)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create hash file: %w", err)
-// 	}
-// 	defer hashFileWriter.Close()
-
-// 	if err := os.WriteFile(hashFile, []byte(hashStr), 0644); err != nil {
-// 		return fmt.Errorf("failed to write hash file: %w", err)
-// 	}
-
-// 	fmt.Println("Snapshot created successfully at: ", dumpFile, " and hash at: ", hashFile)
-
-// 	return nil
-// }
-
-func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, snapshotDir string) error {
+func pgDump(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, snapshotDir string) error {
 	// Check if the snapshot directory exists, if not create it
 	err := os.MkdirAll(snapshotDir, 0755)
 	if err != nil {
@@ -240,28 +107,25 @@ func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, sn
 		"--format", "plain",
 		// Voting Schema (remove the COPY command from voters table during sanitization)
 		"--schema", "kwild_voting", // Include only the processed table
-		"-T", "kwild_voting.version", // Exclude version table
-		"-T", "kwild_voting.votes", // Exclude votes table
-		"-T", "kwild_voting.resolutions", // Exclude resolutions table
-		"-T", "kwild_voting.resolution_types", // Exclude resolution_types table
 
-		// Account Schema (remove the COPY command from accounts during sanitization)
+		// Account Schema
 		"--schema", "kwild_accts",
 
 		// Internal Schema
 		"--schema", "kwild_internal",
-		"-T", "kwild_internal.sentry", // Exclude sentry table
+		"-T", "kwild_internal.sentry", // Exclude sentry table (no versioning)
 
 		// User Schemas
 		"--schema", "ds_*",
 
-		// kwild_chain is not included in this snapshot, as we start from genesis
+		// kwild_chain is not included in this snapshot, as this is used for genesis state
 
 		// Other options
 		"--no-unlogged-table-data",
 		"--no-comments",
 		"--create",
-		"--clean", // drops database first before adding commands to create it
+		// "--clean", // drops database first before adding commands to create it
+		// "--if-exists",
 		"--no-publications",
 		"--no-unlogged-table-data",
 		"--no-tablespaces",
@@ -269,6 +133,7 @@ func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, sn
 		"--no-security-labels",
 		"--no-subscriptions",
 		"--large-objects",
+		"--no-owner", // Do not include ownership information, to restore on any user
 		"--username", dbUser,
 		"--host", dbHost,
 		"--port", dbPort,
@@ -291,51 +156,30 @@ func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, sn
 	}
 	defer pgDumpOutput.Close()
 
-	var inAccountsBlock, inVotersBlock bool
+	hasher := sha256.New()
+	var inVotersBlock bool
 	var validatorCount int64
 	genCfg := config.DefaultGenesisConfig()
 	genCfg.Alloc = make(map[string]*big.Int)
+	multiWriter := io.MultiWriter(gzipWriter, hasher)
+	var totalBytes int64
 
 	// Pass the output of pg_dump through scanner to sanitize it
 	scanner := bufio.NewScanner(pgDumpOutput)
 	for scanner.Scan() {
 		line := scanner.Text()
-		// numBytes := int64(len(line))
 
-		// Remove whitespaces, set and select statements, process accounts and voters table
-		if inAccountsBlock {
-			// Example account:
-			// \\x247620d8b3e92ac21b74bbda3e51d59de5b9a210b740bba0d3683579ddf6d8dd	10	0
-			// \\xc89d42189f0450c2b2c3c61f58ec5d628176a1e7	10 0
-
-			if line == "\\." { // End of accounts block
-				inAccountsBlock = false
-				if _, err := gzipWriter.Write([]byte(line + "\n")); err != nil {
-					return fmt.Errorf("failed to write to gzip writer: %w", err)
-				}
-				continue
-			}
-
-			strs := strings.Split(line, "\t")
-			if len(strs) != 3 {
-				return fmt.Errorf("invalid account line: %s", line)
-			}
-			accountID := strs[0][3:] // Remove the leading \\x
-			balance := big.NewInt(0)
-			balance, ok := balance.SetString(strs[1], 10)
-			if !ok {
-				return fmt.Errorf("failed to parse balance: %w", err)
-			}
-			genCfg.Alloc[accountID] = balance
-
-		} else if inVotersBlock {
+		// Remove whitespaces, set and select statements, process voters table
+		if inVotersBlock {
 			// Example voter: \\xdae5e91f74b95a9db05fc0f1f8c07f95	\\x9e52ff636caf4988e72e4ac865e6ef83a1e262d1a6376a300f3db8884e1f2253	1
 
 			if line == "\\." { // End of voters block
 				inVotersBlock = false
-				if _, err := gzipWriter.Write([]byte(line + "\n")); err != nil {
+				n, err := multiWriter.Write([]byte(line + "\n"))
+				if err != nil {
 					return fmt.Errorf("failed to write to gzip writer: %w", err)
 				}
+				totalBytes += int64(n)
 				continue
 			}
 
@@ -364,19 +208,22 @@ func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, sn
 				continue
 			} else if strings.HasPrefix(line, "--") { // Skip comments
 				continue
-			} else if strings.HasPrefix(line, "SET") || strings.HasPrefix(line, "SELECT") {
-				// Skip SET and SELECT statements
+			} else if strings.HasPrefix(line, "SET") || strings.HasPrefix(line, "SELECT") || strings.HasPrefix(line[1:], "connect") {
+				// Skip SET and SELECT and connect statements
 				continue
+			} else if strings.HasPrefix(line, createDatabase) {
+				// Skip CREATE DATABASE statement
 			} else {
-				if strings.HasPrefix(line, "COPY kwild_accts.accounts") && strings.Contains(line, "FROM stdin;") {
-					inAccountsBlock = true
-				} else if strings.HasPrefix(line, "COPY kwild_voting.voters") && strings.Contains(line, "FROM stdin;") {
+				if strings.HasPrefix(line, "COPY kwild_voting.voters") && strings.Contains(line, "FROM stdin;") {
 					inVotersBlock = true
 				}
+
 				// Write the sanitized line to the gzip writer
-				if _, err := gzipWriter.Write([]byte(line + "\n")); err != nil {
+				n, err := multiWriter.Write([]byte(line + "\n"))
+				if err != nil {
 					return fmt.Errorf("failed to write to gzip writer: %w", err)
 				}
+				totalBytes += int64(n)
 			}
 		}
 	}
@@ -390,13 +237,17 @@ func pgDumpRetry(ctx context.Context, dbName, dbUser, dbPass, dbHost, dbPort, sn
 		return fmt.Errorf("pg_dump failed with error: %s, err: %w", stderr.String(), err)
 	}
 
+	gzipWriter.Flush()
+	hash := hasher.Sum(nil)
+	genCfg.DataAppHash = hash
+
 	// Write the genesis config to a file
 	genesisFile := filepath.Join(snapshotDir, "genesis.json")
 	if err := genCfg.SaveAs(genesisFile); err != nil {
 		return fmt.Errorf("failed to save genesis config: %w", err)
 	}
 
-	fmt.Println("Snapshot created successfully at: ", dumpFile)
-	fmt.Println("Genesis config created successfully at: ", genesisFile)
+	fmt.Println("Snapshot created at: ", dumpFile, " Total bytes written: ", totalBytes)
+	fmt.Println("Genesis config created at: ", genesisFile, " Genesis hash: ", fmt.Sprintf("%x", hash))
 	return nil
 }

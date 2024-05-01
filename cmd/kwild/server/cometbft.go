@@ -106,7 +106,7 @@ func newCometConfig(cfg *config.KwildConfig) *cmtCfg.Config {
 	// Light client verification
 	nodeCfg.StateSync.TrustHash = userChainCfg.StateSync.TrustHash
 	nodeCfg.StateSync.TrustHeight = userChainCfg.StateSync.TrustHeight
-	nodeCfg.StateSync.TrustPeriod = time.Duration(36000 * time.Second) // 10 hours
+	nodeCfg.StateSync.TrustPeriod = time.Duration(userChainCfg.StateSync.TrustPeriod)
 
 	// Standardize the paths.
 	nodeCfg.DBPath = cometbft.DataDir // i.e. "data", we do not allow users to change

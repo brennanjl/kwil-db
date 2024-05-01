@@ -147,7 +147,18 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	if ss.rcvdChunks == ss.snapshot.ChunkCount {
 		ss.log.Info("All chunks received - Starting DB restore process")
 		// Restore the DB from the chunks
-		err := ss.restoreDB(ctx)
+		streamer := NewStreamer(ss.snapshot.ChunkCount, ss.snapshotsDir, ss.log)
+		defer streamer.Close()
+		reader, err := gzip.NewReader(streamer)
+		if err != nil {
+			ss.resetStateSync()
+			return false, false, ErrRejectSnapshot
+		}
+		defer reader.Close()
+
+		err = RestoreDB(ctx, reader, ss.dbConfig.DBName, ss.dbConfig.DBUser,
+			ss.dbConfig.DBPass, ss.dbConfig.DBHost, ss.dbConfig.DBPort,
+			ss.snapshot.SnapshotHash, ss.log)
 		if err != nil {
 			ss.resetStateSync()
 			return false, false, ErrRejectSnapshot
@@ -164,59 +175,63 @@ func (ss *StateSyncer) ApplySnapshotChunk(ctx context.Context, chunk []byte, ind
 	return false, false, nil
 }
 
-// restoreDB restores the database from the logical sql dump
-// This decompresses the chunks and streams the decompressed sql dump
-// to psql command for restoring the database
-func (ss *StateSyncer) restoreDB(ctx context.Context) error {
+// RestoreDB restores the database from the logical sql dump using psql command
+// It also validates the snapshot hash, before restoring the database
+func RestoreDB(ctx context.Context, snapshot io.Reader,
+	dbName, dbUser, dbPass, dbHost, dbPort string,
+	snapshotHash []byte, logger log.Logger) error {
 	// unzip and stream the sql dump to psql
-	cmd := exec.CommandContext(ctx, "psql", "-U", ss.dbConfig.DBUser, "-h", ss.dbConfig.DBHost, "-p", ss.dbConfig.DBPort, "-d", ss.dbConfig.DBName)
+	cmd := exec.CommandContext(ctx,
+		"psql",
+		"--username", dbUser,
+		"--host", dbHost,
+		"--port", dbPort,
+		"--dbname", dbName,
+		"--no-password",
+	)
+	if dbPass != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+dbPass)
+	}
 
+	// cmd.Stdout = &stderr
 	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
 	if err != nil {
 		return err
 	}
+	defer stdinPipe.Close()
 
-	ss.log.Info("Restore DB: ", zap.String("command", cmd.String()))
+	logger.Info("Restore DB: ", zap.String("command", cmd.String()))
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
 	// decompress the chunk streams and stream the sql dump to psql stdinPipe
-	if err := ss.decompressAndValidateChunkStreams(stdinPipe); err != nil {
+	if err := decompressAndValidateSnapshotHash(stdinPipe, snapshot, snapshotHash); err != nil {
 		return err
 	}
 
-	stdinPipe.Close() // end of the input
+	stdinPipe.Close() // signifies the end of the input stream to the psql command
 
 	if err := cmd.Wait(); err != nil {
 		return err
 	}
+
 	return nil
 }
 
 // decompressAndValidateChunkStreams decompresses the chunk streams and validates the snapshot hash
-func (ss *StateSyncer) decompressAndValidateChunkStreams(output io.Writer) error {
-	streamer := NewStreamer(ss.snapshot.ChunkCount, ss.snapshotsDir, ss.log)
-	defer streamer.Close()
-
-	gzipReader, err := gzip.NewReader(streamer)
-	if err != nil {
-		return fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzipReader.Close()
-
+func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
 	hasher := sha256.New()
-	n, err := io.Copy(io.MultiWriter(output, hasher), gzipReader)
+	_, err := io.Copy(io.MultiWriter(output, hasher), reader)
 	if err != nil {
 		return fmt.Errorf("failed to decompress chunk streams: %w", err)
 	}
-	ss.log.Debug("Decompressed chunk streams", zap.Int64("bytes compressed", n))
 	hash := hasher.Sum(nil)
 
 	// Validate the hash of the decompressed chunks
-	if !bytes.Equal(hash, ss.snapshot.SnapshotHash) {
-		return fmt.Errorf("invalid snapshot hash")
+	if !bytes.Equal(hash, snapshotHash) {
+		return fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
 	}
 	return nil
 }
