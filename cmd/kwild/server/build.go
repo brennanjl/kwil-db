@@ -37,7 +37,6 @@ import (
 	kwilgrpc "github.com/kwilteam/kwil-db/internal/services/grpc_server"
 	healthcheck "github.com/kwilteam/kwil-db/internal/services/health"
 	simple_checker "github.com/kwilteam/kwil-db/internal/services/health/simple-checker"
-	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/sql/pg"
 	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
@@ -310,7 +309,7 @@ func (c *closeFuncs) closeAll() error {
 	return err
 }
 
-func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *snapshots.SnapshotStore) *txapp.TxApp {
+func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext, ev *voting.EventStore, snapshotter *statesync.SnapshotStore) *txapp.TxApp {
 	var sh txapp.Snapshotter
 	if snapshotter != nil {
 		sh = snapshotter
@@ -324,7 +323,7 @@ func buildTxApp(d *coreDependencies, db *pg.DB, engine *execution.GlobalContext,
 	return txApp
 }
 
-func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *snapshots.SnapshotStore, statesyncer *statesync.StateSyncer) *abci.AbciApp {
+func buildAbci(d *coreDependencies, txApp abci.TxApp, snapshotter *statesync.SnapshotStore, statesyncer *statesync.StateSyncer) *abci.AbciApp {
 	var sh abci.SnapshotModule
 	if snapshotter != nil {
 		sh = snapshotter
@@ -532,13 +531,13 @@ func initAccountRepository(d *coreDependencies, tx sql.Tx) {
 	}
 }
 
-func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
+func buildSnapshotter(d *coreDependencies) *statesync.SnapshotStore {
 	cfg := d.cfg.AppCfg
 	if !cfg.Snapshots.Enabled {
 		return nil
 	}
 
-	dbCfg := &snapshots.DBConfig{
+	dbCfg := &statesync.DBConfig{
 		DBUser: cfg.DBUser,
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,
@@ -546,13 +545,13 @@ func buildSnapshotter(d *coreDependencies) *snapshots.SnapshotStore {
 		DBName: cfg.DBName,
 	}
 
-	snapshotCfg := &snapshots.SnapshotConfig{
+	snapshotCfg := &statesync.SnapshotConfig{
 		SnapshotDir:     cfg.Snapshots.SnapshotDir,
 		RecurringHeight: cfg.Snapshots.RecurringHeight,
 		MaxSnapshots:    int(cfg.Snapshots.MaxSnapshots),
 	}
 
-	ss, err := snapshots.NewSnapshotStore(snapshotCfg, dbCfg, *d.log.Named("snapshot-store"))
+	ss, err := statesync.NewSnapshotStore(snapshotCfg, dbCfg, *d.log.Named("snapshot-store"))
 	if err != nil {
 		failBuild(err, "failed to build snapshot store")
 	}
@@ -566,7 +565,7 @@ func buildStatesyncer(d *coreDependencies) *statesync.StateSyncer {
 
 	cfg := d.cfg.AppCfg
 
-	dbCfg := &snapshots.DBConfig{
+	dbCfg := &statesync.DBConfig{
 		DBUser: cfg.DBUser,
 		DBPass: cfg.DBPass,
 		DBHost: cfg.DBHost,

@@ -15,7 +15,6 @@ import (
 	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/core/types/transactions"
 	"github.com/kwilteam/kwil-db/internal/ident"
-	"github.com/kwilteam/kwil-db/internal/snapshots"
 	"github.com/kwilteam/kwil-db/internal/statesync"
 	"github.com/kwilteam/kwil-db/internal/txapp"
 
@@ -559,7 +558,7 @@ func (a *AbciApp) OfferSnapshot(ctx context.Context, req *abciTypes.RequestOffer
 			fmt.Errorf("mismatched statesync configuration between CometBFT and ABCI app")
 	}
 
-	var snapshot snapshots.Snapshot
+	var snapshot statesync.Snapshot
 	err := json.Unmarshal(req.Snapshot.Metadata, &snapshot)
 	if err != nil {
 		return &abciTypes.ResponseOfferSnapshot{Result: abciTypes.ResponseOfferSnapshot_REJECT}, err
@@ -907,7 +906,7 @@ func (a *AbciApp) Query(ctx context.Context, req *abciTypes.RequestQuery) (*abci
 			return &abciTypes.ResponseQuery{}, nil
 		}
 
-		var snapshot *snapshots.Snapshot
+		var snapshot *statesync.Snapshot
 		height := string(req.Data)
 		exists := false
 

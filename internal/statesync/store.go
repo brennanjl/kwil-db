@@ -1,4 +1,4 @@
-package snapshots
+package statesync
 
 import (
 	"context"
@@ -15,8 +15,12 @@ import (
 )
 
 /*
-	SnapshotStore Layout on disk
+	SnapshotStore is responsible for creating, managing and serving the snapshots used for statesync process.
+	The snapshots stored in the snapshot store cannot and should not be used for network migrations. As they
+	don't always provide the latest state of the network and contains the state which shouldn't be available
+	at the genesis of a new network.
 
+	SnapshotStore Layout on disk:
 	SnapshotsDir:
 		snapshot-<height1>:
 			snapshot-format-0

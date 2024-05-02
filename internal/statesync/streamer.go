@@ -32,6 +32,7 @@ func NewStreamer(numChunks uint32, chunkDir string, logger log.Logger) *Streamer
 	}
 }
 
+// Next opens the next chunk file for streaming
 func (s *Streamer) Next() error {
 	if s.currentChunk != nil {
 		s.currentChunk.Close()
@@ -60,6 +61,9 @@ func (s *Streamer) Close() error {
 	return nil
 }
 
+// Read reads from the current chunk file
+// If the current chunk is exhausted, it opens the next chunk file
+// until all chunks are read
 func (s *Streamer) Read(p []byte) (n int, err error) {
 	if s.currentChunk == nil {
 		if err := s.Next(); err != nil {

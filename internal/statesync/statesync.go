@@ -14,7 +14,8 @@ import (
 	"strings"
 
 	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/internal/snapshots"
+
+	// "github.com/kwilteam/kwil-db/internal/snapshots"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"go.uber.org/zap"
@@ -24,9 +25,15 @@ const (
 	ABCISnapshotQueryPath = "/snapshot/height"
 )
 
+// StateSyncer is responsible for initializing the database state from the
+// snapshots received from the network. It validates the snapshots against
+// the trusted snapshot providers.
+// The snapshot used to initialize are discarded after the database is restored.
+// Snapshot store if enabled, only stores snapshots produced by the node itself.
+
 type StateSyncer struct {
 	// statesync configuration
-	dbConfig *snapshots.DBConfig
+	dbConfig *DBConfig
 
 	// directory to store snapshots and chunks
 	// same as the snapshot store directory
@@ -38,7 +45,7 @@ type StateSyncer struct {
 
 	// State syncer state
 	inProgress bool
-	snapshot   *snapshots.Snapshot
+	snapshot   *Snapshot
 	chunks     map[uint32]bool // Chunks received till now
 	rcvdChunks uint32          // Number of chunks received till now
 
@@ -46,7 +53,7 @@ type StateSyncer struct {
 	log log.Logger
 }
 
-func NewStateSyncer(ctx context.Context, cfg *snapshots.DBConfig, snapshotDir string, providers []string, logger log.Logger) *StateSyncer {
+func NewStateSyncer(ctx context.Context, cfg *DBConfig, snapshotDir string, providers []string, logger log.Logger) *StateSyncer {
 
 	ss := &StateSyncer{
 		dbConfig:     cfg,
@@ -78,7 +85,7 @@ func NewStateSyncer(ctx context.Context, cfg *snapshots.DBConfig, snapshotDir st
 
 // OfferSnapshot checks if the snapshot is valid and kicks off the state sync process
 // accepted snapshot is stored on disk for later processing
-func (ss *StateSyncer) OfferSnapshot(snapshot *snapshots.Snapshot) error {
+func (ss *StateSyncer) OfferSnapshot(snapshot *Snapshot) error {
 	ss.log.Info("Offering snapshot", zap.Int64("height", int64(snapshot.Height)), zap.Uint32("format", snapshot.Format), zap.String("App Hash", fmt.Sprintf("%x", snapshot.SnapshotHash)))
 
 	// Check if we are already in the middle of a snapshot
@@ -237,9 +244,9 @@ func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snaps
 }
 
 // validateSnapshot validates the snapshot against the trusted snapshot providers
-func (ss *StateSyncer) validateSnapshot(snapshot snapshots.Snapshot) error {
+func (ss *StateSyncer) validateSnapshot(snapshot Snapshot) error {
 	// Check if the snapshot's contents are valid
-	if snapshot.Format != snapshots.DefaultSnapshotFormat {
+	if snapshot.Format != DefaultSnapshotFormat {
 		return ErrUnsupportedSnapshotFormat
 	}
 
@@ -259,7 +266,7 @@ func (ss *StateSyncer) validateSnapshot(snapshot snapshots.Snapshot) error {
 		}
 
 		if res.Response.Value != nil {
-			var snap snapshots.Snapshot
+			var snap Snapshot
 			err = json.Unmarshal(res.Response.Value, &snap)
 			if err != nil {
 				ss.log.Error("Failed to unmarshal snapshot", zap.Error(err))

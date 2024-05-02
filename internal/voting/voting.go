@@ -35,7 +35,22 @@ func initializeVoteStore(ctx context.Context, db sql.TxMaker) error {
 		return fmt.Errorf("failed to initialize or upgrade vote store: %w", err)
 	}
 
-	return nil
+	tx, err := db.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	resolutions := resolutions.ListResolutions()
+	for _, name := range resolutions {
+		uuid := types.NewUUIDV5([]byte(name))
+		_, err := tx.Execute(ctx, createResolutionType, uuid[:], name)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func initVotingTables(ctx context.Context, db sql.DB) error {
@@ -45,15 +60,6 @@ func initVotingTables(ctx context.Context, db sql.DB) error {
 
 	for _, stmt := range initStmts {
 		_, err := db.Execute(ctx, stmt)
-		if err != nil {
-			return err
-		}
-	}
-
-	resolutions := resolutions.ListResolutions()
-	for _, name := range resolutions {
-		uuid := types.NewUUIDV5([]byte(name))
-		_, err := db.Execute(ctx, createResolutionType, uuid[:], name)
 		if err != nil {
 			return err
 		}
