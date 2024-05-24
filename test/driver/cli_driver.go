@@ -577,9 +577,6 @@ func parseRespGetSchema(data any) (*types.Schema, error) {
 	return &resp, nil
 }
 
-// respQueryDb represents the query db response(json) from the cli response
-type respQueryDb []map[string]any
-
 func parseRespQueryDb(data any) (*clientType.Records, error) {
 	bts, err := json.Marshal(data)
 	if err != nil {
