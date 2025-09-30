@@ -8,7 +8,16 @@ import (
 	"syscall"
 
 	"github.com/trufnetwork/kwil-db/app"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/cache"
 )
+
+func init() {
+	err := precompiles.RegisterInitializer("lru", cache.CacheInitializer)
+	if err != nil {
+		panic(fmt.Sprintf("failed to register LRU cache initializer: %v", err))
+	}
+}
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
