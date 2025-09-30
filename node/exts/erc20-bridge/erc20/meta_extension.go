@@ -1206,7 +1206,7 @@ func init() {
 			}, nil
 		})
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("failed to register reward meta extension initializer: %v", err))
 	}
 
 	// we will create the schema at genesis

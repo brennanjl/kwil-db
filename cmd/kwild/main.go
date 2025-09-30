@@ -15,7 +15,7 @@ import (
 func init() {
 	err := precompiles.RegisterInitializer("lru", cache.CacheInitializer)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("failed to register LRU cache initializer: %v", err))
 	}
 }
 

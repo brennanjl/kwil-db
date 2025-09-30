@@ -3,6 +3,7 @@ package erc20
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
@@ -317,6 +318,6 @@ func init() {
 		}, nil
 	})
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("failed to register ERC20 extension initializer: %v", err))
 	}
 }
